@@ -6,6 +6,7 @@ require("dotenv").config();
 
 const db = {};
 
+
 // Initialize Sequelize for PostgreSQL
 const sequelize = new Sequelize(
   process.env.DATABASE_NAME,
