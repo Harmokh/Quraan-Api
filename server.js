@@ -53,6 +53,6 @@ if (app.get("env") === "development") {
   });
 }
 
-app.listen(process.env.API_PORT || 5001, function () {
+app.listen(process.env.API_PORT || 5003, function () {
   console.log("Running on port: " + process.env.API_PORT);
 });
