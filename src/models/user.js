@@ -24,6 +24,7 @@ module.exports = (sequelize, Sequelize) => {
         type: Sequelize.STRING,
         allowNull: false,
       },
+      
       roleId: {
         field: "RoleId",
         type: Sequelize.INTEGER,
