@@ -160,6 +160,7 @@ module.exports = (models, router) => {
       return error(res, err.message);
     }
   });
+  
 
   const CACHE_DIR = path.join(rootDir, "cache", "pdf-pages");
 
