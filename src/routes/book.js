@@ -161,34 +161,65 @@ module.exports = (models, router) => {
     }
   });
 
+  const CACHE_DIR = path.join(rootDir, "cache", "pdf-pages");
+
   bookRouter.get("/book/version/getpages", async (req, res) => {
     try {
       const { versionId, startPage, endPage } = req.query;
 
       if (!versionId)
-        return res
-          .status(400)
-          .json({ success: false, message: "versionId is required" });
+        return res.status(400).json({
+          success: false,
+          message: "versionId is required",
+        });
+
+      const start = parseInt(startPage, 10);
+      let end = endPage ? parseInt(endPage, 10) : start;
+
+      if (isNaN(start) || start < 1 || start > end)
+        return res.status(400).json({
+          success: false,
+          message: "Invalid page range",
+        });
+
+      /* ---------------- CACHE CHECK ---------------- */
+
+      const versionCacheDir = path.join(CACHE_DIR, versionId);
+      const cacheFile = path.join(versionCacheDir, `pages-${start}-${end}.pdf`);
+
+      if (fs.existsSync(cacheFile)) {
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader(
+          "Content-Disposition",
+          `inline; filename=pages-${start}-${end}.pdf`
+        );
+        res.setHeader("Cache-Control", "public, max-age=31536000");
+        return fs.createReadStream(cacheFile).pipe(res);
+      }
+
+      /* ---------------- FETCH VERSION ---------------- */
 
       const version = await models.BookVersion.findByPk(versionId);
       if (!version)
-        return res
-          .status(404)
-          .json({ success: false, message: "Book version not found" });
+        return res.status(404).json({
+          success: false,
+          message: "Book version not found",
+        });
 
       const pdfPath = path.join(rootDir, "public", version.pdfPath);
       if (!fs.existsSync(pdfPath))
-        return res
-          .status(404)
-          .json({ success: false, message: "PDF file not found" });
+        return res.status(404).json({
+          success: false,
+          message: "PDF file not found",
+        });
 
-      const pdfDoc = await PDFDocument.load(fs.readFileSync(pdfPath));
+      /* ---------------- LOAD PDF (ONCE) ---------------- */
+
+      const pdfBytes = await fs.promises.readFile(pdfPath);
+      const pdfDoc = await PDFDocument.load(pdfBytes);
       const totalPages = pdfDoc.getPageCount();
 
-      const start = parseInt(startPage);
-      let end = endPage ? parseInt(endPage) : start;
-
-      if (start < 1 || start > end)
+      if (start > totalPages)
         return res.status(400).json({
           success: false,
           message: `Page range must be between 1 and ${totalPages}`,
@@ -196,23 +227,37 @@ module.exports = (models, router) => {
 
       if (end > totalPages) end = totalPages;
 
+      /* ---------------- EXTRACT PAGES ---------------- */
+
       const newPdfDoc = await PDFDocument.create();
       const pagesToCopy = Array.from(
         { length: end - start + 1 },
         (_, i) => start - 1 + i
       );
+
       const copiedPages = await newPdfDoc.copyPages(pdfDoc, pagesToCopy);
+      copiedPages.forEach((p) => newPdfDoc.addPage(p));
 
-      copiedPages.forEach((page) => newPdfDoc.addPage(page));
+            // Save with optimization
+      const newPdfBytes = await newPdfDoc.save({
+        useObjectStreams: true,
+        addDefaultPage: false,
+      });
+      
+      /* ---------------- SAVE TO CACHE ---------------- */
 
-      const pdfBytes = await newPdfDoc.save();
+      await fs.promises.mkdir(versionCacheDir, { recursive: true });
+      await fs.promises.writeFile(cacheFile, newPdfBytes);
+
+      /* ---------------- SEND RESPONSE ---------------- */
 
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader(
         "Content-Disposition",
         `inline; filename=pages-${start}-${end}.pdf`
       );
-      res.send(Buffer.from(pdfBytes));
+      res.setHeader("Cache-Control", "public, max-age=31536000");
+      res.send(Buffer.from(newPdfBytes));
     } catch (err) {
       console.error(err);
       res.status(500).json({
