@@ -6,15 +6,99 @@ const { Sequelize } = require("../models/models");
 module.exports = (models, router) => {
   const quraanAudioRouter = router.Router();
 
+  // quraanAudioRouter.post(
+  //   "/quraanaudio/save",
+  //   authenticate,
+  //   async (req, res) => {
+  //     try {
+  //       const { id, rects, audioUrl, versionId, index } = req.body;
+
+  //       if (!rects || !Array.isArray(rects) || rects.length === 0)
+  //         return warning(res, "Rects array is required", MessageType.Warning);
+
+  //       let quraanAudio;
+
+  //       if (id) {
+  //         const existing = await models.QuraanAudio.findOne({
+  //           where: { id, userId: req.user.id },
+  //         });
+
+  //         if (!existing)
+  //           return warning(res, "Quraan Audio not found", MessageType.Warning);
+
+  //         await existing.update({
+  //           rects,
+  //           audioUrl,
+  //           versionId,
+  //           index,
+  //         });
+
+  //         quraanAudio = existing;
+  //       } else {
+  //         quraanAudio = await models.QuraanAudio.create({
+  //           versionId,
+  //           rects,
+  //           audioUrl,
+  //           userId: req.user.id,
+  //           versionId,
+  //           index,
+  //         });
+  //       }
+
+  //       return success(res, quraanAudio, "Quraan Audio saved successfully");
+  //     } catch (err) {
+  //       return error(res, err.message || "Error saving Quraan Audio");
+  //     }
+  //   }
+  // );
+
   quraanAudioRouter.post(
     "/quraanaudio/save",
     authenticate,
     async (req, res) => {
       try {
-        const { id, rects, audioUrl, versionId,index } = req.body;
+        const {
+          id,
+          rects,
+          audioUrl,
+          versionId,
+          index: requestedIndex,
+        } = req.body;
 
-        if (!rects || !Array.isArray(rects) || rects.length === 0)
+        if (!Array.isArray(rects) || rects.length === 0)
           return warning(res, "Rects array is required", MessageType.Warning);
+
+        if (!versionId)
+          return warning(res, "versionId is required", MessageType.Warning);
+
+        let assignedIndex;
+
+        // Fetch existing indexes for this version & user
+        const existingIndexes = await models.QuraanAudio.findAll({
+          where: { versionId, userId: req.user.id },
+          attributes: ["index"],
+          order: [["index", "ASC"]],
+        });
+
+        const usedIndexes = existingIndexes.map((e) => e.index);
+
+        if (requestedIndex) {
+          // Frontend requested a specific index
+          if (usedIndexes.includes(requestedIndex)) {
+            return warning(
+              res,
+              `The slot ${requestedIndex} is not available`,
+              MessageType.Warning
+            );
+          }
+          assignedIndex = requestedIndex;
+        } else {
+          // Auto-assign first empty slot
+          assignedIndex = 1;
+          while (usedIndexes.includes(assignedIndex)) {
+            assignedIndex++;
+          }
+        }
 
         let quraanAudio;
 
@@ -30,7 +114,7 @@ module.exports = (models, router) => {
             rects,
             audioUrl,
             versionId,
-            index,
+            index: assignedIndex,
           });
 
           quraanAudio = existing;
@@ -40,8 +124,58 @@ module.exports = (models, router) => {
             rects,
             audioUrl,
             userId: req.user.id,
+            index: assignedIndex,
+          });
+        }
+
+        return success(res, quraanAudio, "Quraan Audio saved successfully");
+      } catch (err) {
+        return error(res, err.message || "Error saving Quraan Audio");
+      }
+    }
+  );
+
+  quraanAudioRouter.post(
+    "/quraanaudio/attachaudio",
+    authenticate,
+    async (req, res) => {
+      try {
+        const {
+          id,
+          rects,
+          audioUrl,
+          versionId,
+          index: requestedIndex,
+        } = req.body;
+
+        if (!Array.isArray(rects) || rects.length === 0)
+          return warning(res, "Rects array is required", MessageType.Warning);
+
+        if (!versionId)
+          return warning(res, "versionId is required", MessageType.Warning);
+
+        let quraanAudio;
+
+        if (id) {
+          const existing = await models.QuraanAudio.findOne({
+            where: { id, userId: req.user.id },
+          });
+
+          if (!existing)
+            return warning(res, "Quraan Audio not found", MessageType.Warning);
+
+          await existing.update({
+            audioUrl,
+          });
+
+          quraanAudio = existing;
+        } else {
+          quraanAudio = await models.QuraanAudio.create({
             versionId,
-            index
+            rects,
+            audioUrl,
+            userId: req.user.id,
+            index: assignedIndex,
           });
         }
 
@@ -84,7 +218,14 @@ module.exports = (models, router) => {
             `),
             ],
           },
-          attributes: ["id", "audioUrl", "rects", "CreatedAt"],
+          attributes: [
+            "id",
+            "audioUrl",
+            "rects",
+            "index",
+            "CreatedAt",
+            "versionId",
+          ],
           order: [["CreatedAt", "DESC"]],
           raw: true,
         });

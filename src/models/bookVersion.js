@@ -18,6 +18,7 @@ module.exports = (sequelize, Sequelize) => {
       author: { field: "Author", type: Sequelize.STRING },
       description: { field: "Description", type: Sequelize.TEXT },
       publishedYear: { field: "PublishedYear", type: Sequelize.INTEGER },
+      totalPages: { field: "TotalPages", type: Sequelize.INTEGER },
       isbn: { field: "ISBN", type: Sequelize.STRING, unique: true },
       pdfPath: { field: "PDFPath", type: Sequelize.STRING, allowNull: false },
       uploadedBy: { field: "UploadedBy", type: Sequelize.UUID },

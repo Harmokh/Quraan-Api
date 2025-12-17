@@ -1,94 +1,138 @@
 const { success, warning, error, MessageType } = require("../utils/response");
 const authenticate = require("../middleware/authorize");
-const { Op } = require("sequelize");
+const { Op, where } = require("sequelize");
 const path = require("path");
-const fs = require("fs");
+const fs = require("fs/promises");
 const { PDFDocument } = require("pdf-lib");
 const rootDir = path.resolve(__dirname, "../../");
+const fsSync = require("fs");
+const generationLocks = new Map();
+
 module.exports = (models, router) => {
   const bookRouter = router.Router();
 
-  // POST /book/save
   bookRouter.post("/book/save", authenticate, async (req, res) => {
-    const {
-      id, // BookId (for update)
-      title,
-      versions = [], // Array of BookVersion details
-    } = req.body;
+    const { id, title, versions = [] } = req.body;
 
     try {
-      const savedBook = await models.sequelize.transaction(async (t) => {
-        let bookRecord;
-
-        if (id) {
-          // 🔹 Update existing Book
-          bookRecord = await models.Book.findByPk(id, { transaction: t });
-          if (bookRecord) {
-            await bookRecord.update({ title }, { transaction: t });
-
-            // 🔹 Remove old versions before inserting new ones
-            await models.BookVersion.destroy({
-              where: { bookId: id },
+      const result = await models.sequelize.transaction(async (t) => {
+        let book = id
+          ? await models.Book.findByPk(id, {
+              include: [{ model: models.BookVersion, as: "Versions" }],
               transaction: t,
-            });
+            })
+          : await models.Book.create({ title }, { transaction: t });
+
+        if (!book) throw new Error("Book not found");
+
+        if (id) await book.update({ title }, { transaction: t });
+
+        const existingVersions = book.Versions || [];
+        const incomingIds = versions.filter((v) => v.id).map((v) => v.id);
+
+        /* ❌ DELETE REMOVED VERSIONS */
+        for (const old of existingVersions) {
+          if (!incomingIds.includes(old.id)) {
+            await deleteFolderSafe(
+              path.join(process.cwd(), "public/book", String(old.id))
+            );
+            await old.destroy({ transaction: t });
           }
         }
 
-        if (!bookRecord) {
-          // 🔹 Create new Book
-          bookRecord = await models.Book.create({ title }, { transaction: t });
-        }
+        /* ➕ ADD / ✏️ UPDATE */
+        for (const v of versions) {
+          let version;
 
-        // 🔹 Create new BookVersions if provided
-        if (versions.length > 0) {
-          // Validate unique ISBNs before insert
-          const isbnList = versions.map((v) => v.isbn).filter(Boolean);
-          if (isbnList.length > 0) {
-            const existingIsbn = await models.BookVersion.findOne({
-              where: { isbn: isbnList },
+          if (v.id) {
+            // UPDATE
+            version = await models.BookVersion.findByPk(v.id, {
               transaction: t,
             });
-            if (existingIsbn) throw new Error("ISBN must be unique");
+
+            if (!version) continue;
+
+            await version.update(
+              {
+                versionName: v.versionName,
+                author: v.author,
+                description: v.description,
+                publishedYear: v.publishedYear,
+                isbn: v.isbn,
+                image: v.image,
+              },
+              { transaction: t }
+            );
+
+            if (v.isPdfChanged) {
+              const versionDir = path.join(
+                process.cwd(),
+                "public/book",
+                String(version.id)
+              );
+
+              await deleteFolderSafe(versionDir);
+
+              const totalPages = await splitPdfIntoPages(
+                path.join(process.cwd(), "public", v.pdfPath),
+                versionDir
+              );
+
+              await version.update(
+                {
+                  pdfPath: `book/${version.id}`,
+                  totalPages, // ✅ UPDATE HERE
+                },
+                { transaction: t }
+              );
+            }
+          } else {
+            // ADD
+            version = await models.BookVersion.create(
+              {
+                bookId: book.id,
+                versionName: v.versionName,
+                author: v.author,
+                description: v.description,
+                publishedYear: v.publishedYear,
+                isbn: v.isbn,
+                image: v.image,
+                pdfPath: v.pdfPath,
+              },
+              { transaction: t }
+            );
+
+            const versionDir = path.join(
+              process.cwd(),
+              "public/book",
+              String(version.id)
+            );
+
+            const totalPages = await splitPdfIntoPages(
+              path.join(process.cwd(), "public", v.pdfPath),
+              versionDir
+            );
+
+            await version.update(
+              {
+                pdfPath: `book/${version.id}`,
+                totalPages, // ✅ SET HERE
+              },
+              { transaction: t }
+            );
           }
-
-          const versionRecords = versions.map((v) => ({
-            versionName: v.versionName,
-            pdfPath: v.pdfPath,
-            bookId: bookRecord.id,
-            author: v.author,
-            description: v.description,
-            publishedYear: v.publishedYear,
-            isbn: v.isbn,
-            image: v.image,
-            uploadedBy: v.uploadedBy,
-          }));
-
-          await models.BookVersion.bulkCreate(versionRecords, {
-            transaction: t,
-          });
         }
 
-        // 🔹 Return full Book with Versions
-        return models.Book.findByPk(bookRecord.id, {
+        return models.Book.findByPk(book.id, {
           include: [{ model: models.BookVersion, as: "Versions" }],
           transaction: t,
         });
       });
 
-      return success(
-        res,
-        savedBook,
-        id ? "Book updated successfully" : "Book created successfully"
-      );
+      return success(res, result, id ? "Book updated" : "Book created");
     } catch (err) {
-      if (err.message === "ISBN must be unique") {
-        return warning(res, err.message, MessageType.Warning);
-      }
-      console.error(err);
-      return error(
-        res,
-        err.message || "An error occurred while saving the book."
-      );
+      console.error("BOOK SAVE ERROR:", err);
+      return error(res, err.message || "Book save failed");
     }
   });
 
@@ -149,10 +193,9 @@ module.exports = (models, router) => {
   bookRouter.delete("/book/delete", authenticate, async (req, res) => {
     try {
       const { id } = req.query;
-      const [updated] = await models.Book.update(
-        { isDeleted: true, isActive: false },
-        { where: { id } }
-      );
+      const updated = await models.Book.destroy({
+        where: { id },
+      });
 
       if (updated) return success(res, null, "Book deleted successfully");
       else return warning(res, "Book not found", MessageType.Warning);
@@ -160,110 +203,105 @@ module.exports = (models, router) => {
       return error(res, err.message);
     }
   });
-  
 
-  const CACHE_DIR = path.join(rootDir, "cache", "pdf-pages");
-
+  // 📄 Get pages of a book version (single or multiple)
   bookRouter.get("/book/version/getpages", async (req, res) => {
     try {
-      const { versionId, startPage, endPage } = req.query;
+      let { versionId, startPage, endPage } = req.query;
 
-      if (!versionId)
+      if (!versionId || !startPage) {
         return res.status(400).json({
           success: false,
-          message: "versionId is required",
+          message: "versionId and startPage are required",
         });
+      }
 
-      const start = parseInt(startPage, 10);
-      let end = endPage ? parseInt(endPage, 10) : start;
+      const start = Number(startPage);
+      let end = endPage ? Number(endPage) : start;
 
-      if (isNaN(start) || start < 1 || start > end)
+      if (
+        !Number.isInteger(start) ||
+        !Number.isInteger(end) ||
+        start < 1 ||
+        start > end
+      ) {
         return res.status(400).json({
           success: false,
           message: "Invalid page range",
         });
-
-      /* ---------------- CACHE CHECK ---------------- */
-
-      const versionCacheDir = path.join(CACHE_DIR, versionId);
-      const cacheFile = path.join(versionCacheDir, `pages-${start}-${end}.pdf`);
-
-      if (fs.existsSync(cacheFile)) {
-        res.setHeader("Content-Type", "application/pdf");
-        res.setHeader(
-          "Content-Disposition",
-          `inline; filename=pages-${start}-${end}.pdf`
-        );
-        res.setHeader("Cache-Control", "public, max-age=31536000");
-        return fs.createReadStream(cacheFile).pipe(res);
       }
 
-      /* ---------------- FETCH VERSION ---------------- */
+      /* 🔹 FETCH VERSION + TOTAL PAGES */
+      const version = await models.BookVersion.findByPk(versionId, {
+        attributes: ["id", "totalPages"],
+      });
 
-      const version = await models.BookVersion.findByPk(versionId);
-      if (!version)
+      if (!version) {
         return res.status(404).json({
           success: false,
           message: "Book version not found",
         });
+      }
 
-      const pdfPath = path.join(rootDir, "public", version.pdfPath);
-      if (!fs.existsSync(pdfPath))
-        return res.status(404).json({
-          success: false,
-          message: "PDF file not found",
-        });
+      if (end > version.totalPages) {
+        end = version.totalPages;
+      }
 
-      /* ---------------- LOAD PDF (ONCE) ---------------- */
-
-      const pdfBytes = await fs.promises.readFile(pdfPath);
-      const pdfDoc = await PDFDocument.load(pdfBytes);
-      const totalPages = pdfDoc.getPageCount();
-
-      if (start > totalPages)
-        return res.status(400).json({
-          success: false,
-          message: `Page range must be between 1 and ${totalPages}`,
-        });
-
-      if (end > totalPages) end = totalPages;
-
-      /* ---------------- EXTRACT PAGES ---------------- */
-
-      const newPdfDoc = await PDFDocument.create();
-      const pagesToCopy = Array.from(
-        { length: end - start + 1 },
-        (_, i) => start - 1 + i
+      const versionDir = path.join(
+        rootDir,
+        "public",
+        "book", // ✅ ensure consistent folder name
+        String(versionId)
       );
 
-      const copiedPages = await newPdfDoc.copyPages(pdfDoc, pagesToCopy);
-      copiedPages.forEach((p) => newPdfDoc.addPage(p));
+      /* 🔹 SINGLE PAGE → DIRECT STREAM */
+      if (start === end) {
+        const pagePath = path.join(versionDir, `page-${start}.pdf`);
 
-            // Save with optimization
-      const newPdfBytes = await newPdfDoc.save({
-        useObjectStreams: true,
-        addDefaultPage: false,
-      });
-      
-      /* ---------------- SAVE TO CACHE ---------------- */
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
 
-      await fs.promises.mkdir(versionCacheDir, { recursive: true });
-      await fs.promises.writeFile(cacheFile, newPdfBytes);
+        const stream = fs.createReadStream(pagePath);
 
-      /* ---------------- SEND RESPONSE ---------------- */
+        stream.on("error", () => {
+          return res.status(404).json({
+            success: false,
+            message: "Page not found",
+          });
+        });
+
+        return stream.pipe(res);
+      }
+
+      /* 🔹 MULTI PAGE → MERGE */
+      const newPdf = await PDFDocument.create();
+
+      for (let p = start; p <= end; p++) {
+        const pagePath = path.join(versionDir, `page-${p}.pdf`);
+
+        try {
+          const pdfBytes = await fsSync.promises.readFile(pagePath);
+          const pdfDoc = await PDFDocument.load(pdfBytes);
+          const [page] = await newPdf.copyPages(pdfDoc, [0]);
+          newPdf.addPage(page);
+        } catch {
+          return res.status(404).json({
+            success: false,
+            message: `Page ${p} not found`,
+          });
+        }
+      }
+
+      const mergedBytes = await newPdf.save({ useObjectStreams: true });
 
       res.setHeader("Content-Type", "application/pdf");
-      res.setHeader(
-        "Content-Disposition",
-        `inline; filename=pages-${start}-${end}.pdf`
-      );
-      res.setHeader("Cache-Control", "public, max-age=31536000");
-      res.send(Buffer.from(newPdfBytes));
+      res.setHeader("Cache-Control", "no-store"); // merged dynamically
+      res.end(Buffer.from(mergedBytes));
     } catch (err) {
-      console.error(err);
+      console.error("GET PAGES ERROR:", err);
       res.status(500).json({
         success: false,
-        message: err.message || "Error fetching PDF pages",
+        message: err.message || "Failed to get pages",
       });
     }
   });
@@ -318,6 +356,58 @@ module.exports = (models, router) => {
       return error(res, err.message);
     }
   });
+
+  bookRouter.get(
+    "/book/versions/getversiontotalpages",
+    authenticate,
+    async (req, res) => {
+      try {
+        const { versionId } = req.query;
+        const version = await models.BookVersion.findOne({
+          where: { id: versionId },
+          attributes: ["id", "totalPages"],
+        });
+        return success(res, version, "Book versions fetched successfully");
+      } catch (err) {
+        return error(res, err.message);
+      }
+    }
+  );
+
+  const deleteFolderSafe = async (dir) => {
+    try {
+      await fs.rm(dir, { recursive: true, force: true });
+    } catch {}
+  };
+
+  const splitPdfIntoPages = async (pdfPath, outputDir) => {
+    try {
+      await fs.mkdir(outputDir, { recursive: true });
+
+      const pdfBytes = await fs.readFile(pdfPath);
+      const pdfDoc = await PDFDocument.load(pdfBytes);
+
+      const totalPages = pdfDoc.getPageCount();
+
+      for (let i = 0; i < totalPages; i++) {
+        const newPdf = await PDFDocument.create();
+        const [page] = await newPdf.copyPages(pdfDoc, [i]);
+        newPdf.addPage(page);
+
+        await fs.writeFile(
+          path.join(outputDir, `page-${i + 1}.pdf`),
+          await newPdf.save()
+        );
+      }
+
+      await fs.unlink(pdfPath);
+
+      return totalPages; // ✅ RETURN PAGE COUNT
+    } catch (err) {
+      await deleteFolderSafe(outputDir);
+      throw err;
+    }
+  };
 
   return bookRouter;
 };
