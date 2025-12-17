@@ -262,6 +262,7 @@ module.exports = (models, router) => {
         res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
 
         const stream = fsSync.createReadStream(pagePath);
+        
 
         stream.on("error", () => {
           return res.status(404).json({
