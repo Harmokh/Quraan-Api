@@ -261,7 +261,7 @@ module.exports = (models, router) => {
         res.setHeader("Content-Type", "application/pdf");
         res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
 
-        const stream = fs.createReadStream(pagePath);
+        const stream = fsSync.createReadStream(pagePath);
 
         stream.on("error", () => {
           return res.status(404).json({
