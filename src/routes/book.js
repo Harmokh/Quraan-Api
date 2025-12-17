@@ -306,6 +306,31 @@ module.exports = (models, router) => {
     }
   });
 
+  bookRouter.get("/book/getbookmaster", authenticate, async (req, res) => {
+    try {
+      const result = await models.Book.findAll({
+        order: [["CreatedAt", "DESC"]],
+      });
+
+      return success(res, result, "Books fetched successfully");
+    } catch (err) {
+      return error(res, err.message);
+    }
+  });
+
+  bookRouter.get("/book/getmaster", authenticate, async (req, res) => {
+    try {
+      const books = await models.Book.findAll({
+        where: { isDeleted: false },
+        include: [{ model: models.BookVersion, as: "versions" }],
+        order: [["CreatedAt", "DESC"]],
+      });
+      return success(res, books, "Books fetched successfully");
+    } catch (err) {
+      return error(res, err.message);
+    }
+  });
+
   // 🔍 Get all versions of a book
   bookRouter.get("/book/versions/getbybook", authenticate, async (req, res) => {
     try {

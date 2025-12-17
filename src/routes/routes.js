@@ -3,5 +3,16 @@ module.exports = function (app, express, routeStart) {
   app.use(routeStart, require("./user.js")(models, express));
   app.use(routeStart, require("./document.js")(models, express));
   app.use(routeStart, require("./book.js")(models, express));
-    app.use(routeStart, require("./quraanAudio.js")(models, express));
+  app.use(routeStart, require("./userFCMToken.js")(models, express));
+  app.use(routeStart, require("./notification.js")(models, express));
+  app.use(routeStart, require("./setting.js")(models, express));
+  app.use(routeStart, require("./bookmark.js")(models, express));
+  app.use(routeStart, require("./userFCMToken.js")(models, express));
+  app.use(routeStart, require("./notification.js")(models, express));
+  app.use(routeStart, require("./annotation.js")(models, express));
+  app.use(routeStart, require("./setting.js")(models, express));
+  app.use(routeStart, require("./quraanAudio.js")(models, express));
+  app.use(routeStart, require("./announcement.js")(models, express));
+  app.use(routeStart, require("./spotlight.js")(models, express));
+  app.use(routeStart, require("./dashboard.js")(models, express));
 };
