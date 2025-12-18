@@ -150,20 +150,99 @@ module.exports = (models, router) => {
     }
   });
 
-  // 📄 Get All Books with Pagination & Filters
+  bookRouter.get("/book/search", authenticate, async (req, res) => {
+    try {
+      const { query } = req.query;
+
+      if (!query || query.trim() === "") {
+        return warning(res, "Search query is required", MessageType.Warning);
+      }
+
+      const searchTerm = `%${query}%`;
+
+      const books = await models.Book.findAll({
+        where: {
+          isDeleted: false,
+          [Op.or]: [
+            { title: { [Op.iLike]: searchTerm } }
+          ],
+        },
+        include: [
+          {
+            model: models.BookVersion,
+            as: "Versions",
+            required: false,
+            where: {
+              [Op.or]: [
+                { versionName: { [Op.iLike]: searchTerm } },
+                Sequelize.where(
+                  Sequelize.cast(Sequelize.col("Versions.isbn"), "TEXT"),
+                  { [Op.iLike]: searchTerm }
+                ),
+                { description: { [Op.iLike]: searchTerm } },
+                Sequelize.where(
+                  Sequelize.cast(
+                    Sequelize.col("Versions.publishedYear"),
+                    "TEXT"
+                  ),
+                  { [Op.iLike]: searchTerm }
+                ),
+              ],
+            },
+          },
+        ],
+        order: [["CreatedAt", "DESC"]],
+      });
+
+      if (!books || books.length === 0) {
+        return warning(
+          res,
+          "No books found matching your search",
+          MessageType.Warning
+        );
+      }
+
+      return success(res, books, "Search results fetched successfully");
+    } catch (err) {
+      return error(res, err.message);
+    }
+  });
+
   bookRouter.get("/book/getall", authenticate, async (req, res) => {
     try {
-      const { pageSize = 10, currentPage = 1, ...filters } = req.query;
+      let { pageSize = 10, currentPage = 1, query } = req.query;
+
       const whereClause = {};
 
-      // for (const key in filters) {
-      //   if (filters[key])
-      //     whereClause[key] = { [Op.iLike]: `%${filters[key]}%` };
-      // }
+      if (query && query.trim() !== "") {
+        whereClause[Op.or] = [
+          { title: { [Op.iLike]: `%${query}%` } },
+          { author: { [Op.iLike]: `%${query}%` } },
+          { description: { [Op.iLike]: `%${query}%` } },
+        ];
+      }
+
+      const includeClause = [
+        {
+          model: models.BookVersion,
+          as: "Versions",
+          required: false,
+          where:
+            query && query.trim() !== ""
+              ? {
+                  [Op.or]: [
+                    { versionName: { [Op.iLike]: `%${query}%` } },
+                    { isbn: { [Op.iLike]: `%${query}%` } },
+                    { description: { [Op.iLike]: `%${query}%` } },
+                  ],
+                }
+              : undefined,
+        },
+      ];
 
       const result = await models.Book.findAndCountAll({
-        // where: whereClause,
-        include: [{ model: models.BookVersion, as: "Versions" }],
+        where: whereClause,
+        include: includeClause,
         limit: parseInt(pageSize),
         offset: (parseInt(currentPage) - 1) * parseInt(pageSize),
         order: [["CreatedAt", "DESC"]],
@@ -262,7 +341,6 @@ module.exports = (models, router) => {
         res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
 
         const stream = fsSync.createReadStream(pagePath);
-        
 
         stream.on("error", () => {
           return res.status(404).json({
