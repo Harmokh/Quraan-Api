@@ -12,7 +12,7 @@ module.exports = (models, router) => {
   const bookRouter = router.Router();
 
   bookRouter.post("/book/save", authenticate, async (req, res) => {
-    const { id, title, versions = [] } = req.body;
+    const { id, title, coverImage, versions = [] } = req.body;
 
     try {
       const result = await models.sequelize.transaction(async (t) => {
@@ -21,12 +21,11 @@ module.exports = (models, router) => {
               include: [{ model: models.BookVersion, as: "Versions" }],
               transaction: t,
             })
-          : await models.Book.create({ title }, { transaction: t });
+          : await models.Book.create({ title, coverImage }, { transaction: t });
 
         if (!book) throw new Error("Book not found");
 
-        if (id) await book.update({ title }, { transaction: t });
-
+        if (id) await book.update({ title, coverImage }, { transaction: t });
         const existingVersions = book.Versions || [];
         const incomingIds = versions.filter((v) => v.id).map((v) => v.id);
 
@@ -163,9 +162,7 @@ module.exports = (models, router) => {
       const books = await models.Book.findAll({
         where: {
           isDeleted: false,
-          [Op.or]: [
-            { title: { [Op.iLike]: searchTerm } }
-          ],
+          [Op.or]: [{ title: { [Op.iLike]: searchTerm } }],
         },
         include: [
           {
@@ -440,7 +437,7 @@ module.exports = (models, router) => {
           {
             model: models.Book,
             as: "Book",
-            attributes: ["Title"],
+            attributes: ["Title", "coverImage"],
           },
         ],
         order: [["CreatedAt", "DESC"]],
@@ -450,6 +447,7 @@ module.exports = (models, router) => {
       const flatVersions = versions.map((v) => ({
         id: v.id,
         bookName: v.Book?.dataValues?.Title || null,
+        coverImage: v.Book?.dataValues?.coverImage || null,
         versionName: v.versionName,
         description: v.description,
         author: v.author,

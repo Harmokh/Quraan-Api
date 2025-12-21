@@ -9,6 +9,11 @@ module.exports = (sequelize, Sequelize) => {
         defaultValue: sequelize.literal("gen_random_uuid()"),
       },
       title: { field: "Title", type: Sequelize.STRING, allowNull: false },
+      coverImage: {
+        field: "CoverImage",
+        type: Sequelize.STRING(3000),
+        allowNull: true,
+      },
       isActive: {
         field: "IsActive",
         type: Sequelize.BOOLEAN,

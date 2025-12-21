@@ -776,6 +776,22 @@ module.exports = (models, router) => {
     }
   });
 
+    // 🔄 Change User Role
+  userRouter.post("/user/decrypt", authenticate, async (req, res) => {
+    try {
+      const { id, roleId } = req.body;
+      const userRecord = await models.User.findOne({ where: { id } });
+      if (!userRecord) {
+        return warning(res, "User not found", MessageType.Warning);
+      }
+
+      await userRecord.update({ roleId });
+      return success(res, userRecord, "User role updated successfully");
+    } catch (err) {
+      return error(res, err.message);
+    }
+  });
+
   // 🔑 Reset Password
   userRouter.post("/user/resetpassword", authenticate, async (req, res) => {
     try {
