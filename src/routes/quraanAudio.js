@@ -187,6 +187,74 @@ module.exports = (models, router) => {
   );
 
   quraanAudioRouter.get(
+    "/quraanaudio/getallformobile",
+    authenticate,
+    async (req, res) => {
+      try {
+        const pageStart = Number(req.query.pageStart);
+        const pageEnd = Number(req.query.pageEnd);
+        const versionId = req.query.versionId;
+
+        if (!versionId) {
+          return warning(res, "versionId is required");
+        }
+
+        if (isNaN(pageStart) || isNaN(pageEnd)) {
+          return error(res, "Invalid page range");
+        }
+
+        // 🧠 Use PostgreSQL JSONB filtering to only fetch relevant records
+        const audios = await models.QuraanAudio.findAll({
+          where: {
+            versionId: versionId,
+            [Op.and]: [
+              // Only rows having at least one rect with page between the range
+              Sequelize.literal(`
+              EXISTS (
+                SELECT 1
+                FROM jsonb_array_elements("Rects") AS rect
+                WHERE (rect->>'page')::int BETWEEN ${pageStart} AND ${pageEnd}
+              )
+            `),
+            ],
+          },
+          attributes: [
+            "id",
+            "audioUrl",
+            "rects",
+            "index",
+            "CreatedAt",
+            "versionId",
+          ],
+          order: [["CreatedAt", "DESC"]],
+          raw: true,
+        });
+
+        // 🧩 Adjust the rects (normalize page indices)
+        const processedAudios = audios.map((audio) => {
+          const rects = (audio.rects || []).filter(
+            (r) => r.page >= pageStart && r.page <= pageEnd
+          );
+
+          return {
+            ...audio,
+            rects: rects,
+          };
+        });
+
+        return success(
+          res,
+          processedAudios,
+          "Quraan Audios fetched successfully"
+        );
+      } catch (err) {
+        console.error("Error fetching Quraan Audios:", err);
+        return error(res, err.message || "Error fetching Quraan Audios");
+      }
+    }
+  );
+
+  quraanAudioRouter.get(
     "/quraanaudio/getall",
     authenticate,
     async (req, res) => {
