@@ -336,6 +336,7 @@ module.exports = (models, router) => {
 
         res.setHeader("Content-Type", "application/pdf");
         res.setHeader("Cache-Control", "public, max-age=31536000, immutable");
+        res.setHeader("X-Total-Pages", version.totalPages);
 
         const stream = fsSync.createReadStream(pagePath);
 
@@ -372,6 +373,7 @@ module.exports = (models, router) => {
 
       res.setHeader("Content-Type", "application/pdf");
       res.setHeader("Cache-Control", "no-store"); // merged dynamically
+      res.setHeader("X-Total-Pages", version.totalPages);
       res.end(Buffer.from(mergedBytes));
     } catch (err) {
       console.error("GET PAGES ERROR:", err);
