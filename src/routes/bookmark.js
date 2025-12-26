@@ -194,8 +194,6 @@ module.exports = (models, router) => {
                   "id",
                   "title",
                   "coverImage",
-                  "author",
-                  "description",
                   "CreatedAt",
                 ],
                 required: false,
@@ -262,9 +260,7 @@ module.exports = (models, router) => {
                   attributes: [
                     "id",
                     "title",
-                    "coverImage",
-                    "author",
-                    "description",
+                    "coverImage"
                   ],
                   required: true,
                 },
@@ -296,8 +292,6 @@ module.exports = (models, router) => {
               id: book.id,
               title: book.title,
               coverImage: book.coverImage,
-              author: book.author,
-              description: book.description,
               versions: {},
             };
           }
