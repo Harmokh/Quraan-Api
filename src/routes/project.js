@@ -4,25 +4,48 @@ const authenticate = require("../middleware/authorize");
 module.exports = (models, router) => {
   const projectRouter = router.Router();
 
-  // =========================
-  // CREATE PROJECT
-  // POST /project/create
-  // =========================
-  projectRouter.post("/project/create", authenticate, async (req, res) => {
-    try {
-      const { slug, name, location } = req.body;
-      delete req.body.id
-      if (!slug || !name || !location)
-        return warning(res, "Slug, name, and location are required", MessageType.Warning);
+// =========================
+// CREATE OR UPDATE PROJECT
+// POST /project/create
+// =========================
+projectRouter.post("/project/create", authenticate, async (req, res) => {
+  try {
+    const { id, slug, name, location } = req.body;
 
-      const exists = await models.Project.findOne({
-        where: { slug, isDeleted: false },
+    if (!slug || !name || !location) {
+      return warning(
+        res,
+        "Slug, name, and location are required",
+        MessageType.Warning
+      );
+    }
+
+    // -------------------------
+    // UPDATE
+    // -------------------------
+    if (id) {
+      const project = await models.Project.findOne({
+        where: { id, isDeleted: false },
       });
 
-      if (exists)
-        return warning(res, "Project already exists", MessageType.Warning);
+      if (!project) {
+        return warning(res, "Project not found", MessageType.Warning);
+      }
 
-      const project = await models.Project.create({
+      // slug uniqueness check (exclude self)
+      const slugExists = await models.Project.findOne({
+        where: {
+          slug,
+          id: { [models.Sequelize.Op.ne]: id },
+          isDeleted: false,
+        },
+      });
+
+      if (slugExists) {
+        return warning(res, "Slug already exists", MessageType.Warning);
+      }
+
+      await project.update({
         ...req.body,
         coordinates: req.body.coordinates
           ? JSON.stringify(req.body.coordinates)
@@ -35,11 +58,41 @@ module.exports = (models, router) => {
           : null,
       });
 
-      return success(res, project, "Project created successfully");
-    } catch (err) {
-      return error(res, err.message);
+      return success(res, project, "Project updated successfully");
     }
-  });
+
+    // -------------------------
+    // CREATE
+    // -------------------------
+
+    delete req.body.id
+    const exists = await models.Project.findOne({
+      where: { slug, isDeleted: false },
+    });
+
+    if (exists) {
+      return warning(res, "Project already exists", MessageType.Warning);
+    }
+
+    const project = await models.Project.create({
+      ...req.body,
+      coordinates: req.body.coordinates
+        ? JSON.stringify(req.body.coordinates)
+        : null,
+      images: req.body.images
+        ? JSON.stringify(req.body.images)
+        : null,
+      clientReviews: req.body.clientReviews
+        ? JSON.stringify(req.body.clientReviews)
+        : null,
+    });
+
+    return success(res, project, "Project created successfully");
+  } catch (err) {
+    return error(res, err.message);
+  }
+});
+
 
   // =========================
   // GET ALL PROJECTS
@@ -75,7 +128,7 @@ module.exports = (models, router) => {
     }
   });
 
-   // =========================
+// =========================
 // GET ALL PROJECTS (Frontend)
 // GET /project/getallforfrontend
 // =========================
@@ -83,17 +136,182 @@ projectRouter.get("/project/getallforfrontend", async (req, res) => {
   try {
     const result = await models.Project.findAll({
       where: { isDeleted: false },
-      order: [["CreatedAt", "DESC"]],
+    //   order: [["createdAt", "DESC"]],
     });
 
-    const rows = result.map(p => ({
-      ...p.toJSON(),
-      coordinates: p.coordinates ? JSON.parse(p.coordinates) : null,
-      images: p.images ? JSON.parse(p.images) : [],
-      clientReviews: p.clientReviews
-        ? JSON.parse(p.clientReviews)
-        : [],
-    }));
+    const rows = result.map(p => {
+      const projectData = p.toJSON();
+      
+      // Parse JSON strings or use existing values
+      let coordinates = null;
+      try {
+        coordinates = projectData.coordinates ? JSON.parse(projectData.coordinates) : null;
+      } catch (error) {
+        console.error('Error parsing coordinates:', error);
+        coordinates = null;
+      }
+      
+      // Handle images - could be string, array, or already parsed
+      let images = [];
+      try {
+        if (projectData.images) {
+          if (typeof projectData.images === 'string') {
+            const parsed = JSON.parse(projectData.images);
+            if (Array.isArray(parsed)) {
+              images = parsed;
+            } else {
+              images = [parsed];
+            }
+          } else if (Array.isArray(projectData.images)) {
+            images = projectData.images;
+          } else {
+            images = [projectData.images];
+          }
+        }
+        
+        // Clean up images array - filter and map
+        images = images
+          .filter(img => {
+            if (!img) return false;
+            
+            // Handle empty objects
+            if (typeof img === 'object' && img !== null) {
+              // Check if it's an empty object
+              if (Object.keys(img).length === 0) return false;
+              
+              // Check if it has any image properties
+              const hasImageProp = img.url || img.imageUrl || img.src || img.path || img.filename;
+              return !!hasImageProp;
+            }
+            
+            // Handle strings
+            if (typeof img === 'string') {
+              return img.trim() !== '';
+            }
+            
+            return false;
+          })
+          .map(img => {
+            if (typeof img === 'object' && img !== null) {
+              return img.url || img.imageUrl || img.src || img.path || img.filename || '';
+            }
+            return img.toString();
+          });
+        
+      } catch (error) {
+        console.error('Error parsing images:', error);
+        images = [];
+      }
+      
+      // Handle clientReviews - FIXED THIS SECTION
+      let clientReviews = [];
+      try {
+        if (projectData.clientReviews) {
+          let parsedReviews = projectData.clientReviews;
+          
+          // Parse if it's a string
+          if (typeof projectData.clientReviews === 'string') {
+            try {
+              parsedReviews = JSON.parse(projectData.clientReviews);
+            } catch (parseError) {
+              console.error('Error parsing clientReviews JSON:', parseError);
+              parsedReviews = [];
+            }
+          }
+          
+          // Ensure it's an array
+          if (!Array.isArray(parsedReviews)) {
+            parsedReviews = [parsedReviews];
+          }
+          
+          // Process each review
+          clientReviews = parsedReviews
+            .filter(review => review && typeof review === 'object' && Object.keys(review).length > 0)
+            .map(review => {
+              // Handle reviewImages - FIXED FIELD NAME
+              let reviewImages = [];
+              if (review.reviewImages) {
+                let parsedImages = review.reviewImages;
+                
+                // Parse if it's a string
+                if (typeof review.reviewImages === 'string') {
+                  try {
+                    parsedImages = JSON.parse(review.reviewImages);
+                  } catch (parseError) {
+                    console.error('Error parsing reviewImages JSON:', parseError);
+                    parsedImages = [];
+                  }
+                }
+                
+                // Ensure it's an array
+                if (!Array.isArray(parsedImages)) {
+                  parsedImages = [parsedImages];
+                }
+                
+                // Clean up review images
+                reviewImages = parsedImages
+                  .filter(img => {
+                    if (!img) return false;
+                    
+                    // Handle empty objects
+                    if (typeof img === 'object' && img !== null) {
+                      if (Object.keys(img).length === 0) return false;
+                      const hasImageProp = img.url || img.imageUrl || img.src || img.path || img.filename;
+                      return !!hasImageProp;
+                    }
+                    
+                    if (typeof img === 'string') {
+                      return img.trim() !== '';
+                    }
+                    
+                    return false;
+                  })
+                  .map(img => {
+                    if (typeof img === 'object' && img !== null) {
+                      return img.url || img.imageUrl || img.src || img.path || img.filename || '';
+                    }
+                    return img.toString();
+                  });
+              }
+              
+              // Return review in the correct format (using 'images' field, not 'reviewImages')
+              return {
+                name: review.name || '',
+                designation: review.designation || '',
+                rating: review.rating || 0,
+                comment: review.comment || '',
+                date: review.date || '',
+                images: reviewImages  // Note: using 'images' not 'reviewImages'
+              };
+            });
+        }
+        
+      } catch (error) {
+        console.error('Error parsing client reviews:', error);
+        clientReviews = [];
+      }
+      
+      // Format the response exactly as specified
+      return {
+        id: projectData.id,
+        slug: projectData.slug || "",
+        name: projectData.name || "",
+        location: projectData.location || "",
+        district: projectData.district || "",
+        country: projectData.country || "",
+        state: projectData.state || "",
+        category: projectData.category || "",
+        status: projectData.status || "",
+        coordinates: coordinates,
+        overview: projectData.overview || "",
+        scopeOfWork: projectData.scopeOfWork || "",
+        client: projectData.client || "",
+        projectManagementConsultancy: projectData.projectManagementConsultancy || "",
+        images: images,
+        clientReviews: clientReviews, // This should now have data
+        featured: !!projectData.featured
+      };
+    });
 
     return success(
       res,
@@ -101,10 +319,184 @@ projectRouter.get("/project/getallforfrontend", async (req, res) => {
       "Projects fetched successfully"
     );
   } catch (err) {
+    console.error('Error fetching projects for frontend:', err);
     return error(res, err.message);
   }
 });
 
+// GET ALL PROJECTS (Frontend)
+// GET /project/getallforfrontend
+// =========================
+projectRouter.get("/project/getallforfrontend", async (req, res) => {
+  try {
+    const result = await models.Project.findAll({
+      where: { isDeleted: false },
+    //   order: [["createdAt", "DESC"]],
+    });
+
+    const rows = result.map(p => {
+      const projectData = p.toJSON();
+      
+      // Parse JSON strings or use existing values
+      let coordinates = null;
+      try {
+        coordinates = projectData.coordinates ? JSON.parse(projectData.coordinates) : null;
+      } catch (error) {
+        console.error('Error parsing coordinates:', error);
+        coordinates = null;
+      }
+      
+      // Handle images - could be string, array, or already parsed
+      let images = [];
+      try {
+        if (projectData.images) {
+          if (typeof projectData.images === 'string') {
+            const parsed = JSON.parse(projectData.images);
+            if (Array.isArray(parsed)) {
+              images = parsed;
+            } else {
+              images = [parsed];
+            }
+          } else if (Array.isArray(projectData.images)) {
+            images = projectData.images;
+          } else {
+            images = [projectData.images];
+          }
+        }
+        
+        // Clean up images array - filter and map
+        images = images
+          .filter(img => {
+            if (!img) return false;
+            
+            // Handle empty objects
+            if (typeof img === 'object' && img !== null) {
+              // Check if it's an empty object
+              if (Object.keys(img).length === 0) return false;
+              
+              // Check if it has any image properties
+              const hasImageProp = img.url || img.imageUrl || img.src || img.path || img.filename;
+              return !!hasImageProp;
+            }
+            
+            // Handle strings
+            if (typeof img === 'string') {
+              return img.trim() !== '';
+            }
+            
+            return false;
+          })
+          .map(img => {
+            if (typeof img === 'object' && img !== null) {
+              return img.url || img.imageUrl || img.src || img.path || img.filename || '';
+            }
+            return img.toString();
+          });
+        
+      } catch (error) {
+        console.error('Error parsing images:', error);
+        images = [];
+      }
+      
+      // Handle clientReviews
+      let clientReviews = [];
+      try {
+        if (projectData.clientReviews) {
+          if (typeof projectData.clientReviews === 'string') {
+            const parsed = JSON.parse(projectData.clientReviews);
+            if (Array.isArray(parsed)) {
+              clientReviews = parsed;
+            } else {
+              clientReviews = [parsed];
+            }
+          } else if (Array.isArray(projectData.clientReviews)) {
+            clientReviews = projectData.clientReviews;
+          } else {
+            clientReviews = [projectData.clientReviews];
+          }
+        }
+        
+        // Clean up clientReviews
+        clientReviews = clientReviews
+          .filter(review => review && typeof review === 'object')
+          .map(review => {
+            // Handle reviewImages
+            let reviewImages = [];
+            if (review.reviewImages) {
+              if (Array.isArray(review.reviewImages)) {
+                reviewImages = review.reviewImages
+                  .filter(img => {
+                    if (!img) return false;
+                    
+                    // Handle empty objects in reviewImages
+                    if (typeof img === 'object' && img !== null) {
+                      if (Object.keys(img).length === 0) return false;
+                      const hasImageProp = img.url || img.imageUrl || img.src || img.path || img.filename;
+                      return !!hasImageProp;
+                    }
+                    
+                    if (typeof img === 'string') {
+                      return img.trim() !== '';
+                    }
+                    
+                    return false;
+                  })
+                  .map(img => {
+                    if (typeof img === 'object' && img !== null) {
+                      return img.url || img.imageUrl || img.src || img.path || img.filename || '';
+                    }
+                    return img.toString();
+                  });
+              }
+            }
+            
+            return {
+              name: review.name || '',
+              designation: review.designation || '',
+              rating: review.rating || 0,
+              comment: review.comment || '',
+              date: review.date || '',
+              images: reviewImages
+            };
+          });
+        
+      } catch (error) {
+        console.error('Error parsing client reviews:', error);
+        clientReviews = [];
+      }
+      
+      // Format the response exactly as specified
+      return {
+        id: projectData.id,
+        slug: projectData.slug || "",
+        name: projectData.name || "",
+        location: projectData.location || "",
+        district: projectData.district || "",
+        country: projectData.country || "",
+        state: projectData.state || "",
+        category: projectData.category || "",
+        status: projectData.status || "",
+        coordinates: coordinates,
+        overview: projectData.overview || "",
+        scopeOfWork: projectData.scopeOfWork || "",
+        client: projectData.client || "",
+        projectManagementConsultancy: projectData.projectManagementConsultancy || "",
+        images: images,
+        clientReviews: clientReviews,
+        featured: !!projectData.featured
+      };
+    });
+
+    return success(
+      res,
+      rows,
+      "Projects fetched successfully"
+    );
+  } catch (err) {
+    console.error('Error fetching projects for frontend:', err);
+    return error(res, err.message);
+  }
+});
 
   // =========================
   // GET PROJECT BY ID
