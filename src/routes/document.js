@@ -38,13 +38,57 @@ const fileFilter = (req, file, cb) => {
     "image/jpeg",
     "image/png",
     "text/plain",
+    // MP3
     "audio/mpeg",
+    "audio/mp3",
+    "audio/x-mp3",
+    "audio/mpeg3",
+    "audio/x-mpeg",
+    "audio/x-mpeg3",
+    // WAV
     "audio/wav",
     "audio/x-wav",
+    "audio/vnd.wav",
+    // OGG / Vorbis
     "audio/ogg",
+    "audio/vorbis",
+    "audio/x-vorbis",
+    "video/ogg",
+    // WebM
     "audio/webm",
+    "video/webm",
+    // MP4 / M4A / AAC
     "audio/mp4",
+    "audio/m4a",
+    "audio/x-m4a",
     "audio/aac",
+    "audio/x-aac",
+    "video/mp4",
+    // FLAC
+    "audio/flac",
+    "audio/x-flac",
+    // Opus
+    "audio/opus",
+    // AIFF
+    "audio/aiff",
+    "audio/x-aiff",
+    // WMA
+    "audio/x-ms-wma",
+    // AMR
+    "audio/amr",
+    "audio/amr-wb",
+    // 3GPP
+    "audio/3gpp",
+    "audio/3gpp2",
+    // MIDI
+    "audio/midi",
+    "audio/x-midi",
+    // RealAudio
+    "audio/vnd.rn-realaudio",
+    "audio/x-realaudio",
+    "audio/x-pn-realaudio",
+    // Generic / fallback
+    "audio/basic",
   ];
 
   if (!allowedTypes.includes(file.mimetype)) {
