@@ -38,6 +38,13 @@ const fileFilter = (req, file, cb) => {
     "image/jpeg",
     "image/png",
     "text/plain",
+    "audio/mpeg",
+    "audio/wav",
+    "audio/x-wav",
+    "audio/ogg",
+    "audio/webm",
+    "audio/mp4",
+    "audio/aac",
   ];
 
   if (!allowedTypes.includes(file.mimetype)) {
