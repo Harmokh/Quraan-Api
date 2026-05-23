@@ -3,6 +3,7 @@ const { success, error } = require("../utils/response");
 module.exports = (models, router) => {
   const settingRouter = router.Router();
 
+  
   const getHtmlTemplate = (title, content) => `
     <!DOCTYPE html>
     <html lang="en">
