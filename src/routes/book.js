@@ -556,13 +556,13 @@ module.exports = (models, router) => {
       const versions = await models.BookVersion.findAll({
         limit: parseInt(pageSize),
         offset: (parseInt(currentPage) - 1) * parseInt(pageSize),
-        include: [{ model: models.Book, as: "Book", attributes: ["Title", "coverImage"] }],
+        include: [{ model: models.Book, as: "Book", attributes: ["Title"] }],
         order: [["CreatedAt", "DESC"]],
       });
       const flatVersions = versions.map((v) => ({
         id: v.id,
         bookName: v.Book?.dataValues?.Title || null,
-        coverImage: v.Book?.dataValues?.coverImage || null,
+        coverImage: v.image || null,
         versionName: v.versionName,
         description: v.description,
         author: v.author,
