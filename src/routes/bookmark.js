@@ -5,11 +5,11 @@ const { sendToUser } = require("../services/notificationService");
 module.exports = (models, router) => {
   const bookmarkRouter = router.Router();
 
-  // ✅ Create or Update Bookmark
+  // ✅ Create or restore Bookmark
   // POST /bookmark/save
   bookmarkRouter.post("/bookmark/save", authenticate, async (req, res) => {
     try {
-      const { bookVersionId, pageNumber, note, bookId } = req.body;
+      const { bookVersionId, pageNumber, bookId } = req.body;
       if (!bookVersionId || !pageNumber)
         return warning(
           res,
@@ -17,43 +17,39 @@ module.exports = (models, router) => {
           MessageType.Warning
         );
 
-      // Check if bookmark already exists for this user + version + page
-      let bookmark = await models.Bookmark.findOne({
+      // findOrCreate is atomic — safe against concurrent requests
+      const [bookmark, created] = await models.Bookmark.findOrCreate({
         where: {
           userId: req.user.id,
           bookVersionId,
           pageNumber,
-          isDeleted: false,
         },
+        defaults: { isActive: true, isDeleted: false },
       });
 
-      if (bookmark) {
-        // Update note if it exists
-        await bookmark.update({ note });
-        return success(res, bookmark, "Bookmark updated successfully");
-      } else {
-        bookmark = await models.Bookmark.create({
-          userId: req.user.id,
-          bookVersionId,
-          pageNumber,
-          note,
-        });
-        await sendToUser(
-          req.user.id,
-          {
-            title: "Bookmark Added",
-            body: `Bookmark added on page ${pageNumber} of your book version.`,
-          },
-          {
-            bookmarkId: bookmark.id,
-            versionId: bookVersionId,
-            pageNumber: pageNumber,
-            bookId: bookId,
-          },
-          "bookmark"
-        );
-        return success(res, bookmark, "Bookmark created successfully");
+      if (!created) {
+        // Restore a previously soft-deleted bookmark
+        await bookmark.update({ isDeleted: false, isActive: true });
+        return success(res, bookmark, "Bookmark restored successfully");
       }
+
+      // Only notify on a genuinely new bookmark
+      await sendToUser(
+        req.user.id,
+        {
+          title: "Bookmark Added",
+          body: `Bookmark added on page ${pageNumber} of your book version.`,
+        },
+        {
+          bookmarkId: bookmark.id,
+          versionId: bookVersionId,
+          pageNumber: pageNumber,
+          bookId: bookId,
+        },
+        "bookmark"
+      );
+
+      return success(res, bookmark, "Bookmark created successfully");
     } catch (err) {
       console.error(err);
       return error(res, err.message || "Error saving bookmark");
@@ -161,7 +157,7 @@ module.exports = (models, router) => {
 
         const bookmarks = await models.Bookmark.findAll({
           where: { userId: req.user.id, bookVersionId, isDeleted: false },
-          order: [["CreatedAt", "DESC"]],
+          order: [["PageNumber", "ASC"]],
         });
 
         return success(res, bookmarks, "Bookmarks fetched successfully");
@@ -211,7 +207,7 @@ module.exports = (models, router) => {
     }
   });
 
-  // 🗑️ Delete Bookmark (Hard Delete)
+  // 🗑️ Delete Bookmark (Soft Delete)
   // DELETE /bookmark/delete
   bookmarkRouter.delete("/bookmark/delete", authenticate, async (req, res) => {
     try {
@@ -219,11 +215,12 @@ module.exports = (models, router) => {
       if (!id)
         return warning(res, "Bookmark id is required", MessageType.Warning);
 
-      const updated = await models.Bookmark.destroy({
-        where: { id, userId: req.user.id },
-      });
+      const [count] = await models.Bookmark.update(
+        { isDeleted: true, isActive: false },
+        { where: { id, userId: req.user.id, isDeleted: false } }
+      );
 
-      if (updated) return success(res, null, "Bookmark deleted successfully");
+      if (count > 0) return success(res, null, "Bookmark deleted successfully");
       else return warning(res, "Bookmark not found", MessageType.Warning);
     } catch (err) {
       return error(res, err.message);
