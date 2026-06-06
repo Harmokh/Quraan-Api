@@ -186,6 +186,58 @@ module.exports = (models, router) => {
     }
   );
 
+  // Append a single rect to an existing audio item (cross-page ayat support)
+  quraanAudioRouter.post(
+    "/quraanaudio/appendrect",
+    authenticate,
+    async (req, res) => {
+      try {
+        const { id, rect } = req.body;
+        if (!id)
+          return warning(res, "id is required", MessageType.Warning);
+        if (!rect || typeof rect !== "object" || !("page" in rect))
+          return warning(res, "rect with page field is required", MessageType.Warning);
+
+        const existing = await models.QuraanAudio.findOne({
+          where: { id, userId: req.user.id },
+        });
+        if (!existing)
+          return warning(res, "Quraan Audio not found", MessageType.Warning);
+
+        const updatedRects = [...(existing.rects || []), rect];
+        await existing.update({ rects: updatedRects });
+
+        return success(res, existing, "Rect appended successfully");
+      } catch (err) {
+        return error(res, err.message || "Error appending rect");
+      }
+    }
+  );
+
+  // All audio items for a version (no page filter) — used by admin panel selector
+  quraanAudioRouter.get(
+    "/quraanaudio/getbyversion",
+    authenticate,
+    async (req, res) => {
+      try {
+        const { versionId } = req.query;
+        if (!versionId)
+          return warning(res, "versionId is required", MessageType.Warning);
+
+        const audios = await models.QuraanAudio.findAll({
+          where: { versionId },
+          attributes: ["id", "audioUrl", "rects", "index", "CreatedAt", "versionId"],
+          order: [["index", "ASC"]],
+          raw: true,
+        });
+
+        return success(res, audios, "Quraan Audios fetched successfully");
+      } catch (err) {
+        return error(res, err.message || "Error fetching Quraan Audios");
+      }
+    }
+  );
+
   quraanAudioRouter.get(
     "/quraanaudio/getallformobile",
     authenticate,
