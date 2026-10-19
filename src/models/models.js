@@ -51,7 +51,22 @@ Object.keys(db).forEach((modelName) => {
 // Sync models to DB
 sequelize
   .sync({ alter: true })
-  .then(() => {
+  .then(async () => {
+    // sync({ alter }) never removes indexes, so drop the legacy unique
+    // (UserId, BookVersionId, PageNumber) index that allowed only one bookmark
+    // per page. Safe to run on every start.
+    try {
+      // Sequelize named it "bookmarks__user_id__book_version_id__page_number";
+      // the single-underscore form is dropped too in case it was made by hand.
+      await sequelize.query(
+        'DROP INDEX IF EXISTS "bookmarks__user_id__book_version_id__page_number"'
+      );
+      await sequelize.query(
+        'DROP INDEX IF EXISTS "bookmarks_user_id_book_version_id_page_number"'
+      );
+    } catch (err) {
+      console.error("Could not drop legacy bookmark index:", err.message);
+    }
     console.log("All models synced with PostgreSQL database.");
   })
   .catch((err) => {

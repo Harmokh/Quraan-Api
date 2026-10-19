@@ -5,49 +5,54 @@ const { sendToUser } = require("../services/notificationService");
 module.exports = (models, router) => {
   const bookmarkRouter = router.Router();
 
-  // ✅ Create or restore Bookmark
+  // ✅ Create Bookmark
   // POST /bookmark/save
+  // Each call creates a new bookmark: a page can hold several bookmarks, each
+  // with its own colour category and optional note.
   bookmarkRouter.post("/bookmark/save", authenticate, async (req, res) => {
     try {
-      const { bookVersionId, pageNumber, bookId } = req.body;
-      if (!bookVersionId || !pageNumber)
+      const { bookVersionId, bookId } = req.body;
+      const pageNumber = parseInt(req.body.pageNumber, 10);
+      if (!bookVersionId || !pageNumber || pageNumber < 1)
         return warning(
           res,
           "bookVersionId and pageNumber are required",
           MessageType.Warning
         );
 
-      // findOrCreate is atomic — safe against concurrent requests
-      const [bookmark, created] = await models.Bookmark.findOrCreate({
-        where: {
-          userId: req.user.id,
-          bookVersionId,
-          pageNumber,
-        },
-        defaults: { isActive: true, isDeleted: false },
+      const color =
+        typeof req.body.color === "string" && req.body.color.trim()
+          ? req.body.color.trim().slice(0, 20)
+          : null;
+      const note =
+        typeof req.body.note === "string" ? req.body.note.trim().slice(0, 500) : "";
+
+      const bookmark = await models.Bookmark.create({
+        userId: req.user.id,
+        bookVersionId,
+        pageNumber,
+        color,
+        note,
+        isActive: true,
+        isDeleted: false,
       });
 
-      if (!created) {
-        // Restore a previously soft-deleted bookmark
-        await bookmark.update({ isDeleted: false, isActive: true });
-        return success(res, bookmark, "Bookmark restored successfully");
-      }
-
-      // Only notify on a genuinely new bookmark
-      await sendToUser(
+      // Fire-and-forget: a slow or failing push must never fail the save.
+      // FCM data values must all be strings.
+      sendToUser(
         req.user.id,
         {
           title: "Bookmark Added",
           body: `Bookmark added on page ${pageNumber} of your book version.`,
         },
         {
-          bookmarkId: bookmark.id,
-          versionId: bookVersionId,
-          pageNumber: pageNumber,
-          bookId: bookId,
+          bookmarkId: String(bookmark.id),
+          versionId: String(bookVersionId),
+          pageNumber: String(pageNumber),
+          bookId: bookId ? String(bookId) : "",
         },
         "bookmark"
-      );
+      ).catch((err) => console.error("Bookmark notification failed:", err));
 
       return success(res, bookmark, "Bookmark created successfully");
     } catch (err) {
@@ -310,6 +315,7 @@ module.exports = (models, router) => {
             id: bookmark.id,
             pageNumber: bookmark.pageNumber,
             note: bookmark.note,
+            color: bookmark.color,
             createdAt: bookmark.CreatedAt,
             updatedAt: bookmark.UpdatedAt,
           });

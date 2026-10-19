@@ -19,6 +19,17 @@ module.exports = (sequelize, Sequelize) => {
         type: Sequelize.INTEGER,
         allowNull: false,
       },
+      // Category colour id chosen in the app (e.g. "green") and an optional note
+      color: {
+        field: "Color",
+        type: Sequelize.STRING(20),
+        allowNull: true,
+      },
+      note: {
+        field: "Note",
+        type: Sequelize.STRING(500),
+        allowNull: true,
+      },
       isActive: {
         field: "IsActive",
         type: Sequelize.BOOLEAN,
@@ -35,8 +46,13 @@ module.exports = (sequelize, Sequelize) => {
       timestamps: true,
       createdAt: "CreatedAt",
       updatedAt: "UpdatedAt",
+      // Not unique: a user may keep several (differently coloured) bookmarks on
+      // the same page. The old unique index is dropped after sync (models.js).
       indexes: [
-        { unique: true, fields: ["UserId", "BookVersionId", "PageNumber"] },
+        {
+          name: "bookmarks_user_version_page_idx",
+          fields: ["UserId", "BookVersionId", "PageNumber"],
+        },
       ],
     }
   );
