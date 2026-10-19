@@ -2,14 +2,18 @@ const multer = require("multer");
 const fs = require("fs");
 const path = require("path");
 const authenticate = require("../middleware/authorize");
-var dir = "";
+
+// Absolute, and never reassigned. This used to be a mutable module-level `var` that
+// /document/uploadfile rewrote on every call — which then corrupted the multer
+// destination and the delete path for every later request until the server restarted.
+const PUBLIC_DIR = path.resolve(__dirname, "../../public");
 /* =========================
    SAFE STORAGE CONFIG
 ========================= */
 const storage = multer.diskStorage({
   destination: (req, file, cb) => {
     const destination = path.basename(req.query.destination || "uploads");
-    const uploadDir = path.join(dir, "public", destination);
+    const uploadDir = path.join(PUBLIC_DIR, destination);
 
     fs.mkdir(uploadDir, { recursive: true }, (err) => {
       cb(err, uploadDir);
@@ -165,7 +169,7 @@ module.exports = (models, router) => {
         const safeFilePath = path
           .normalize(fileUrl)
           .replace(/^(\.\.(\/|\\|$))+/, "");
-        const fullPath = path.join(dir, "public", safeFilePath);
+        const fullPath = path.join(PUBLIC_DIR, safeFilePath);
 
         // Ensure file exists
         if (!fs.existsSync(fullPath)) {
@@ -188,11 +192,9 @@ module.exports = (models, router) => {
     })
 
     .post("/document/uploadfile", authenticate, (req, res) => {
-      dir = "";
-      dir = "./public/";
-      dir = dir + req.query.destination;
-      if (!fs.existsSync(dir)) {
-        fs.mkdirSync(dir);
+      const uploadDir = path.join(PUBLIC_DIR, path.basename(req.query.destination || "uploads"));
+      if (!fs.existsSync(uploadDir)) {
+        fs.mkdirSync(uploadDir, { recursive: true });
       }
       var uploadsingle = multer({ storage: storage }).single("file");
       uploadsingle(req, res, function (err) {

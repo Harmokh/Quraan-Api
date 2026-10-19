@@ -16,5 +16,6 @@ module.exports = function (app, express, routeStart) {
   app.use(routeStart, require("./spotlight.js")(models, express));
   app.use(routeStart, require("./dashboard.js")(models, express));
     app.use(routeStart, require("./project.js")(models, express));
+  app.use(routeStart, require("./quraanIndex.js")(models, express));
 
 };

@@ -250,6 +250,38 @@ const deleteFolderSafe = async (dir) => {
   try { await fs.rm(dir, { recursive: true, force: true }); } catch {}
 };
 
+// Empty form fields arrive as "" from the admin. Persisting those breaks two things:
+// an INTEGER column rejects "", and ISBN is UNIQUE — so a second version saved with
+// an empty ISBN collides with the first. Both become null instead.
+// Lines per page offered for a version. Keep in step with the dropdown in the admin's
+// save-book component; adding a value here and there is all a new mushaf layout needs.
+const LINE_COUNT_OPTIONS = [13, 15];
+
+// The app groups a book's versions by language, so "english", "English" and " ENGLISH "
+// must not become three separate choices. Free text in, one canonical form out.
+const normaliseLanguage = (value) => {
+  const text = cleanText(value);
+  if (text === null) return null;
+  return text
+    .replace(/\s+/g, " ")
+    .split(" ")
+    .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
+    .join(" ");
+};
+
+const cleanText = (value) => {
+  if (value === undefined || value === null) return null;
+  const text = String(value).trim();
+  return text === "" ? null : text;
+};
+
+const toNullableInt = (value) => {
+  const text = cleanText(value);
+  if (text === null) return null;
+  const parsed = Number(text);
+  return Number.isInteger(parsed) ? parsed : null;
+};
+
 // ─── Routes ───────────────────────────────────────────────────────────────────
 
 module.exports = (models, router) => {
@@ -359,9 +391,140 @@ module.exports = (models, router) => {
 
   // ── Book CRUD (unchanged logic, cache invalidation added) ─────────────────
 
+  // ── Book save ─────────────────────────────────────────────────────────────
+  // The whole payload is normalised and validated BEFORE the database or the
+  // filesystem is touched, so a bad field can't leave a half-created book behind
+  // and the admin gets a message naming the version and the field instead of a
+  // raw driver error ("invalid input syntax for type integer", "duplicate key…").
   bookRouter.post("/book/save", authenticate, async (req, res) => {
-    const { id, title, coverImage, versions = [] } = req.body;
+    const { id } = req.body;
     try {
+      const title = cleanText(req.body.title);
+      const coverImage = cleanText(req.body.coverImage);
+      const versions = Array.isArray(req.body.versions) ? req.body.versions : [];
+
+      if (!title) return warning(res, "Book title is required", MessageType.WARNING);
+      if (!coverImage) return warning(res, "Book cover image is required", MessageType.WARNING);
+      if (versions.length === 0)
+        return warning(res, "Add at least one version before saving", MessageType.WARNING);
+
+      const currentYear = new Date().getFullYear();
+      const prepared = [];
+
+      for (let i = 0; i < versions.length; i++) {
+        const v = versions[i];
+        const versionName = cleanText(v.versionName);
+        const label = versionName || `Version ${i + 1}`;
+
+        if (!versionName)
+          return warning(res, `Version ${i + 1}: name is required`, MessageType.WARNING);
+
+        const image = cleanText(v.image);
+        if (!image)
+          return warning(res, `${label}: version image is required`, MessageType.WARNING);
+
+        const language = normaliseLanguage(v.language);
+        const lineCount = toNullableInt(v.lineCount);
+        if (cleanText(v.lineCount) !== null && lineCount === null)
+          return warning(res, `${label}: line count must be a number`, MessageType.WARNING);
+        if (lineCount !== null && !LINE_COUNT_OPTIONS.includes(lineCount))
+          return warning(
+            res,
+            `${label}: line count must be one of ${LINE_COUNT_OPTIONS.join(", ")}`,
+            MessageType.WARNING
+          );
+
+        const rawYear = cleanText(v.publishedYear);
+        const publishedYear = toNullableInt(v.publishedYear);
+        if (rawYear !== null && publishedYear === null)
+          return warning(res, `${label}: published year must be a whole number`, MessageType.WARNING);
+        if (publishedYear !== null && (publishedYear < 1 || publishedYear > currentYear + 1))
+          return warning(
+            res,
+            `${label}: published year must be between 1 and ${currentYear + 1}`,
+            MessageType.WARNING
+          );
+
+        // A version needs a freshly uploaded PDF when it is new, or when the admin
+        // replaced the file on an existing one.
+        const needsPdf = !v.id || !!v.isPdfChanged;
+        const pdfPath = cleanText(v.pdfPath);
+        if (needsPdf && !pdfPath)
+          return warning(res, `${label}: upload a PDF file`, MessageType.WARNING);
+
+        // Splitting consumes (deletes) the uploaded file, so a retry after a failed
+        // save would otherwise blow up with a bare ENOENT deep inside the split.
+        let sourcePdf = null;
+        if (needsPdf) {
+          sourcePdf = path.join(rootDir, "public", pdfPath);
+          try {
+            await fs.access(sourcePdf);
+          } catch {
+            return warning(
+              res,
+              `${label}: the uploaded PDF is no longer on the server — please upload it again`,
+              MessageType.WARNING
+            );
+          }
+        }
+
+        prepared.push({
+          id: v.id || null,
+          label,
+          versionName,
+          image,
+          pdfPath,
+          sourcePdf,
+          needsPdf,
+          author: cleanText(v.author),
+          description: cleanText(v.description),
+          isbn: cleanText(v.isbn),
+          publishedYear,
+          language,
+          lineCount,
+        });
+      }
+
+      // ISBN is UNIQUE across every version in the system. Check it here so the
+      // admin is told which version clashes rather than seeing a constraint error.
+      const seenIsbn = new Map();
+      for (const p of prepared) {
+        if (!p.isbn) continue;
+        const key = p.isbn.toLowerCase();
+        if (seenIsbn.has(key))
+          return warning(
+            res,
+            `ISBN ${p.isbn} is used by both "${seenIsbn.get(key)}" and "${p.label}"`,
+            MessageType.WARNING
+          );
+        seenIsbn.set(key, p.label);
+      }
+
+      const incomingIsbns = prepared.filter((p) => p.isbn).map((p) => p.isbn);
+      if (incomingIsbns.length > 0) {
+        const keptIds = prepared.filter((p) => p.id).map((p) => p.id);
+        const clashes = await models.BookVersion.findAll({
+          where: {
+            isbn: { [Op.in]: incomingIsbns },
+            ...(keptIds.length > 0 ? { id: { [Op.notIn]: keptIds } } : {}),
+          },
+          attributes: ["id", "isbn", "versionName"],
+        });
+        if (clashes.length > 0) {
+          const clash = clashes[0];
+          return warning(
+            res,
+            `ISBN ${clash.isbn} already belongs to "${clash.versionName}"`,
+            MessageType.WARNING
+          );
+        }
+      }
+
+      // Directories of versions the admin removed. They are deleted only after the
+      // transaction commits — deleting first would leave a live version pointing at
+      // missing page files if anything later in the save rolled back.
+      const dirsToDelete = [];
+
       const result = await models.sequelize.transaction(async (t) => {
         let book = id
           ? await models.Book.findByPk(id, {
@@ -374,53 +537,55 @@ module.exports = (models, router) => {
         if (id) await book.update({ title, coverImage }, { transaction: t });
 
         const existingVersions = book.Versions || [];
-        const incomingIds = versions.filter((v) => v.id).map((v) => v.id);
+        const incomingIds = prepared.filter((p) => p.id).map((p) => p.id);
 
         for (const old of existingVersions) {
           if (!incomingIds.includes(old.id)) {
-            await deleteFolderSafe(path.join(process.cwd(), "public/book", String(old.id)));
+            dirsToDelete.push(path.join(rootDir, "public/book", String(old.id)));
             versionCache.delete(String(old.id));
             await old.destroy({ transaction: t });
           }
         }
 
-        for (const v of versions) {
+        for (const p of prepared) {
+          const fields = {
+            versionName: p.versionName,
+            author: p.author,
+            description: p.description,
+            publishedYear: p.publishedYear,
+            isbn: p.isbn,
+            image: p.image,
+            language: p.language,
+            lineCount: p.lineCount,
+          };
+
           let version;
-          if (v.id) {
-            version = await models.BookVersion.findByPk(v.id, { transaction: t });
-            if (!version) continue;
-
-            await version.update(
-              { versionName: v.versionName, author: v.author, description: v.description,
-                publishedYear: v.publishedYear, isbn: v.isbn, image: v.image },
-              { transaction: t }
-            );
-
-            if (v.isPdfChanged) {
-              const versionDir = path.join(process.cwd(), "public/book", String(version.id));
-              await deleteFolderSafe(versionDir);
-              versionCache.delete(String(version.id));
-
-              const totalPages = await splitPdfIntoPages(
-                path.join(process.cwd(), "public", v.pdfPath),
-                versionDir
-              );
-              await version.update({ pdfPath: `book/${version.id}`, totalPages }, { transaction: t });
-            }
+          if (p.id) {
+            version = await models.BookVersion.findByPk(p.id, { transaction: t });
+            if (!version) throw new Error(`${p.label}: this version no longer exists`);
+            await version.update(fields, { transaction: t });
           } else {
             version = await models.BookVersion.create(
-              { bookId: book.id, versionName: v.versionName, author: v.author,
-                description: v.description, publishedYear: v.publishedYear,
-                isbn: v.isbn, image: v.image, pdfPath: v.pdfPath },
+              {
+                ...fields,
+                bookId: book.id,
+                pdfPath: p.pdfPath,
+                uploadedBy: req.user?.id || null,
+              },
               { transaction: t }
             );
+          }
 
-            const versionDir = path.join(process.cwd(), "public/book", String(version.id));
-            const totalPages = await splitPdfIntoPages(
-              path.join(process.cwd(), "public", v.pdfPath),
-              versionDir
+          if (p.needsPdf) {
+            const versionDir = path.join(rootDir, "public/book", String(version.id));
+            await deleteFolderSafe(versionDir);
+            versionCache.delete(String(version.id));
+
+            const totalPages = await splitPdfIntoPages(p.sourcePdf, versionDir);
+            await version.update(
+              { pdfPath: `book/${version.id}`, totalPages },
+              { transaction: t }
             );
-            await version.update({ pdfPath: `book/${version.id}`, totalPages }, { transaction: t });
           }
         }
 
@@ -430,9 +595,26 @@ module.exports = (models, router) => {
         });
       });
 
+      for (const dir of dirsToDelete) await deleteFolderSafe(dir);
+
       return success(res, result, id ? "Book updated" : "Book created");
     } catch (err) {
       console.error("BOOK SAVE ERROR:", err);
+
+      // Turn the driver's constraint errors into something an admin can act on.
+      if (err?.name === "SequelizeUniqueConstraintError")
+        return warning(
+          res,
+          `${err?.errors?.[0]?.path || "A field"} must be unique — that value is already used by another version`,
+          MessageType.WARNING
+        );
+      if (err?.name === "SequelizeValidationError")
+        return warning(
+          res,
+          err.errors?.map((e) => e.message).join(", ") || "Invalid data",
+          MessageType.WARNING
+        );
+
       return error(res, err.message || "Book save failed");
     }
   });
@@ -443,7 +625,27 @@ module.exports = (models, router) => {
         include: [{ model: models.BookVersion, as: "Versions" }],
       });
       if (!book) return warning(res, "Book not found", MessageType.Warning);
-      return success(res, book, "Book fetched successfully");
+
+      // Flag the versions that carry a Surah/Parah page index, so the reader can
+      // open the Surah list for those instead of jumping straight into the PDF.
+      const result = book.toJSON();
+      const versionIds = (result.Versions || []).map((v) => v.id);
+
+      if (versionIds.length > 0) {
+        const indexed = await models.VersionPageIndex.findAll({
+          where: { versionId: { [Op.in]: versionIds } },
+          attributes: ["versionId"],
+          group: ["versionId"],
+          raw: true,
+        });
+        const indexedIds = new Set(indexed.map((row) => row.versionId));
+        result.Versions = result.Versions.map((v) => ({
+          ...v,
+          hasQuraanIndex: indexedIds.has(v.id),
+        }));
+      }
+
+      return success(res, result, "Book fetched successfully");
     } catch (err) {
       return error(res, err.message);
     }
@@ -559,13 +761,28 @@ module.exports = (models, router) => {
         include: [{ model: models.Book, as: "Book", attributes: ["Title"] }],
         order: [["CreatedAt", "DESC"]],
       });
+      // Versions carrying a Surah/Parah page index open on the Surah list in the app.
+      const indexed = await models.VersionPageIndex.findAll({
+        where: { versionId: { [Op.in]: versions.map((v) => v.id) } },
+        attributes: ["versionId"],
+        group: ["versionId"],
+        raw: true,
+      });
+      const indexedIds = new Set(indexed.map((row) => row.versionId));
+
       const flatVersions = versions.map((v) => ({
         id: v.id,
+        // The book this version belongs to. The app's lists show versions but must
+        // navigate by book, so the reader still passes through translation → line type.
+        bookId: v.bookId,
         bookName: v.Book?.dataValues?.Title || null,
         coverImage: v.image || null,
         versionName: v.versionName,
         description: v.description,
         author: v.author,
+        language: v.language,
+        lineCount: v.lineCount,
+        hasQuraanIndex: indexedIds.has(v.id),
       }));
       return success(res, flatVersions, "Book versions fetched successfully");
     } catch (err) {

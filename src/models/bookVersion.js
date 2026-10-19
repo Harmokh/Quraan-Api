@@ -19,6 +19,12 @@ module.exports = (sequelize, Sequelize) => {
       description: { field: "Description", type: Sequelize.TEXT },
       publishedYear: { field: "PublishedYear", type: Sequelize.INTEGER },
       totalPages: { field: "TotalPages", type: Sequelize.INTEGER },
+      // The translation this version carries — English, Urdu, Gujarati and so on.
+      // A reader picks the language first, then the layout, so these two fields are
+      // what the app groups a book's versions by. Null for books where neither applies.
+      language: { field: "Language", type: Sequelize.STRING },
+      // Lines per page of the mushaf — 13-line, 15-line and so on.
+      lineCount: { field: "LineCount", type: Sequelize.INTEGER },
       isbn: { field: "ISBN", type: Sequelize.STRING, unique: true },
       pdfPath: { field: "PDFPath", type: Sequelize.STRING, allowNull: false },
       uploadedBy: { field: "UploadedBy", type: Sequelize.UUID },
