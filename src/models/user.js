@@ -74,6 +74,13 @@ module.exports = (sequelize, Sequelize) => {
     }
   );
 
+  // Never send the password hash to clients (res.json uses toJSON)
+  User.prototype.toJSON = function () {
+    const values = { ...this.get() };
+    delete values.passwordHash;
+    return values;
+  };
+
   User.associate = (models) => {
     User.belongsTo(models.Role, {
       foreignKey: "roleId",

@@ -34,6 +34,30 @@ const storage = multer.diskStorage({
 
 const upload = multer({ storage: storage });
 
+const ADMIN_ROLE_ID = 1;
+const USER_ROLE_ID = 2;
+const isAdmin = (req) => Number(req.user?.roleId) === ADMIN_ROLE_ID;
+// Admin-only routes (managing other users)
+const requireAdmin = (req, res, next) =>
+  isAdmin(req) ? next() : res.status(403).json({ message: "Administrator access required" });
+// Logged-in user from the Authorization header, if any (for routes that are
+// public but behave differently when signed in, like /user/save)
+const optionalUser = (req) => {
+  const token = (req.headers["authorization"] || "").split(" ")[1];
+  if (!token) return null;
+  try {
+    return jwt.verify(token, process.env.JWT_SECRET);
+  } catch {
+    return null;
+  }
+};
+// Fields a user may change on their own profile
+const SELF_EDITABLE = ["name", "bio", "address", "image"];
+// Fields a new self-registered account may set
+const REGISTER_FIELDS = ["name", "email", "bio", "address", "image"];
+const pick = (obj, keys) =>
+  keys.reduce((o, k) => (obj[k] !== undefined ? { ...o, [k]: obj[k] } : o), {});
+
 module.exports = (models, router) => {
   const userRouter = router.Router();
   const SALT_ROUNDS = 10;
@@ -96,7 +120,33 @@ module.exports = (models, router) => {
    *         description: Some server error
    */
   userRouter.post("/user/save", async (req, res) => {
-    const { id, password, ...userData } = req.body;
+    const { id, password } = req.body;
+    let userData;
+    if (id) {
+      // Updating an account: only the account owner or an administrator
+      req.user = optionalUser(req);
+      if (!req.user) return res.status(401).json({ message: "Unauthorized" });
+      if (!isAdmin(req) && String(req.user.id) !== String(id))
+        return res.status(403).json({ message: "You can only edit your own profile" });
+      // Owners change their profile details only; admins may also change
+      // email, role and status. Passwords change via the reset flow.
+      userData = isAdmin(req)
+        ? pick(req.body, [...SELF_EDITABLE, "email", "roleId", "isActive", "isVerified"])
+        : pick(req.body, SELF_EDITABLE);
+    } else {
+      // Public self-registration: always a normal, not-yet-activated user,
+      // whatever role or status the request asks for
+      userData = {
+        ...pick(req.body, REGISTER_FIELDS),
+        roleId: USER_ROLE_ID,
+        isVerified: false,
+      };
+      if (typeof userData.email === "string") userData.email = userData.email.trim();
+      if (!userData.email || !userData.name)
+        return warning(res, "Name and email are required", MessageType.Warning);
+      if (!password || String(password).length < 6)
+        return warning(res, "Password must be at least 6 characters", MessageType.Warning);
+    }
 
     const t = await sequelize.transaction();
     try {
@@ -151,12 +201,11 @@ module.exports = (models, router) => {
           transaction: t,
         });
 
-        if (userRecord) {
-          if (password) {
-            userData.passwordHash = await hashPassword(password);
-          }
-          await userRecord.update(userData, { transaction: t });
+        if (!userRecord) {
+          await t.rollback();
+          return warning(res, "User not found", MessageType.Warning);
         }
+        await userRecord.update(userData, { transaction: t });
       }
 
       // ➕ Create user
@@ -425,7 +474,7 @@ module.exports = (models, router) => {
   });
 
   // Change Status of user
-  userRouter.post("/user/changestatus", async (req, res) => {
+  userRouter.post("/user/changestatus", authenticate, requireAdmin, async (req, res) => {
     try {
       const { id, newStatus } = req.body;
 
@@ -653,6 +702,8 @@ module.exports = (models, router) => {
    */
   userRouter.get("/user/getbyid", authenticate, async (req, res) => {
     try {
+      if (!isAdmin(req) && String(req.user.id) !== String(req.query.id))
+        return res.status(403).json({ message: "You can only view your own profile" });
       const userRecord = await models.User.findOne({
         where: { id: req.query.id, isDeleted: false },
         include: [{ model: models.Role, as: "Role" }],
@@ -701,7 +752,7 @@ module.exports = (models, router) => {
    *                   items:
    *                     $ref: '#/components/schemas/User'
    */
-  userRouter.get("/user/getall", authenticate, async (req, res) => {
+  userRouter.get("/user/getall", authenticate, requireAdmin, async (req, res) => {
     try {
       const { pageSize = 10, currentPage = 1, ...filters } = req.query;
       // const whereClause = { isDeleted: false };
@@ -742,7 +793,7 @@ module.exports = (models, router) => {
   });
 
   // 🗑️ Soft Delete User
-  userRouter.delete("/user/delete", authenticate, async (req, res) => {
+  userRouter.delete("/user/delete", authenticate, requireAdmin, async (req, res) => {
     try {
       const { id } = req.query;
       const [updated] = await models.User.update(
@@ -761,7 +812,7 @@ module.exports = (models, router) => {
   });
 
   // 🔄 Change User Role
-  userRouter.post("/user/changerole", authenticate, async (req, res) => {
+  userRouter.post("/user/changerole", authenticate, requireAdmin, async (req, res) => {
     try {
       const { id, roleId } = req.body;
       const userRecord = await models.User.findOne({ where: { id } });
@@ -777,7 +828,7 @@ module.exports = (models, router) => {
   });
 
     // 🔄 Change User Role
-  userRouter.post("/user/decrypt", authenticate, async (req, res) => {
+  userRouter.post("/user/decrypt", authenticate, requireAdmin, async (req, res) => {
     try {
       const { id, roleId } = req.body;
       const userRecord = await models.User.findOne({ where: { id } });
@@ -799,6 +850,12 @@ module.exports = (models, router) => {
       if (!newPassword) {
         return warning(res, "New password is required", MessageType.Warning);
       }
+      if (!isAdmin(req) && String(req.user.id) !== String(id)) {
+        return res.status(403).json({ message: "You can only change your own password" });
+      }
+      if (String(newPassword).length < 6) {
+        return warning(res, "Password must be at least 6 characters", MessageType.Warning);
+      }
 
       const userRecord = await models.User.findOne({ where: { id } });
       if (!userRecord) {
@@ -815,7 +872,7 @@ module.exports = (models, router) => {
   });
 
   // 📄 List Users by Role
-  userRouter.get("/user/byrole", authenticate, async (req, res) => {
+  userRouter.get("/user/byrole", authenticate, requireAdmin, async (req, res) => {
     try {
       const { roleId } = req.query;
       if (!roleId) {
