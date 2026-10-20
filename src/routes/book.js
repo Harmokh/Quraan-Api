@@ -206,38 +206,23 @@ async function runStartupMigration(models) {
   }
 }
 
-// Splits an uploaded PDF into individual page files AND saves the original as
-// all-pages.pdf — so the very first user request is always a fast file stream.
-const splitPdfIntoPages = async (pdfPath, outputDir) => {
+// Stores an uploaded PDF as the version's all-pages.pdf and returns its page
+// count. The book is NOT split into per-page files any more: these mushaf PDFs
+// embed multi-MB fonts that every split page duplicated (a 19 MB book became
+// 4 GB), and splitting inside the save request outran the proxy timeout for
+// large books. Readers and the admin load pages from all-pages.pdf with range
+// requests; /book/version/getpages extracts pages from it on demand.
+const storeVersionPdf = async (pdfPath, outputDir) => {
   try {
     await fs.mkdir(outputDir, { recursive: true });
-
-    const pdfBytes = await fs.readFile(pdfPath);
-
-    // Save original immediately — enables fast full-book streaming from first request
-    await fs.writeFile(path.join(outputDir, "all-pages.pdf"), pdfBytes);
-
-    const pdfDoc = await PDFDocument.load(pdfBytes);
+    const dest = path.join(outputDir, "all-pages.pdf");
+    await fs.copyFile(pdfPath, dest);
+    const pdfDoc = await PDFDocument.load(await fs.readFile(dest), {
+      ignoreEncryption: true,
+      updateMetadata: false,
+    });
     const totalPages = pdfDoc.getPageCount();
-
-    // Split pages in parallel batches to avoid exhausting memory
-    const BATCH = 20;
-    for (let batch = 0; batch < totalPages; batch += BATCH) {
-      const batchEnd = Math.min(batch + BATCH, totalPages);
-      await Promise.all(
-        Array.from({ length: batchEnd - batch }, async (_, j) => {
-          const i = batch + j;
-          const newPdf = await PDFDocument.create();
-          const [page] = await newPdf.copyPages(pdfDoc, [i]);
-          newPdf.addPage(page);
-          await fs.writeFile(
-            path.join(outputDir, `page-${i + 1}.pdf`),
-            await newPdf.save()
-          );
-        })
-      );
-    }
-
+    if (!totalPages) throw new Error("The PDF has no pages");
     await fs.unlink(pdfPath);
     return totalPages;
   } catch (err) {
@@ -346,6 +331,24 @@ module.exports = (models, router) => {
       if (end > version.totalPages) end = version.totalPages;
 
       const versionDir = path.join(rootDir, "public", "book", String(versionId));
+
+      // Versions saved since per-page splitting stopped have only all-pages.pdf:
+      // cut the requested pages out of it.
+      if (!fsSync.existsSync(path.join(versionDir, `page-${start}.pdf`))) {
+        const fullPath = path.join(versionDir, "all-pages.pdf");
+        if (!fsSync.existsSync(fullPath))
+          return res.status(404).json({ success: false, message: "Book file not found" });
+        const full = await PDFDocument.load(await fs.readFile(fullPath), { ignoreEncryption: true });
+        const out = await PDFDocument.create();
+        const indices = Array.from({ length: end - start + 1 }, (_, i) => start - 1 + i)
+          .filter((i) => i < full.getPageCount());
+        (await out.copyPages(full, indices)).forEach((pg) => out.addPage(pg));
+        const bytes = Buffer.from(await out.save({ useObjectStreams: true }));
+        res.setHeader("Content-Type", "application/pdf");
+        res.setHeader("X-Total-Pages", version.totalPages);
+        res.setHeader("Access-Control-Allow-Origin", "*");
+        return res.end(bytes);
+      }
 
       // Single page — direct stream
       if (start === end) {
@@ -581,7 +584,7 @@ module.exports = (models, router) => {
             await deleteFolderSafe(versionDir);
             versionCache.delete(String(version.id));
 
-            const totalPages = await splitPdfIntoPages(p.sourcePdf, versionDir);
+            const totalPages = await storeVersionPdf(p.sourcePdf, versionDir);
             await version.update(
               { pdfPath: `book/${version.id}`, totalPages },
               { transaction: t }

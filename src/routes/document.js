@@ -96,6 +96,7 @@ const fileFilter = (req, file, cb) => {
   ];
 
   if (!allowedTypes.includes(file.mimetype)) {
+    req.rejectedMimeType = file.mimetype; // reported back by /document/uploadsingle
     return cb(new Error("Invalid file type"), false);
   }
 
@@ -145,7 +146,19 @@ module.exports = (models, router) => {
     .post(
       "/document/uploadsingle",
       authenticate,
-      upload.single("file"),
+      // Turn multer's rejections into a JSON message the admin can show,
+      // instead of falling through to Express's default HTML error page.
+      (req, res, next) =>
+        upload.single("file")(req, res, (err) => {
+          if (!err) return next();
+          if (err.code === "LIMIT_FILE_SIZE")
+            return res.status(413).json({ error: "The file is too large (limit 1 GB)." });
+          if (err.message === "Invalid file type")
+            return res.status(415).json({
+              error: `This file type isn't accepted (${req.rejectedMimeType || "unknown type"}).`,
+            });
+          return res.status(400).json({ error: err.message || "Upload failed" });
+        }),
       (req, res) => {
         if (!req.file) {
           return res.status(400).json({ error: "No file uploaded" });
