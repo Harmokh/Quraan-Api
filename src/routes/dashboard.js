@@ -2,10 +2,11 @@
 const express = require("express");
 const { Op, fn, col, literal, Sequelize } = require("sequelize");
 const { success, error } = require("../utils/response");
+const authenticate = require("../middleware/authorize");
 const dashboardRouter = express.Router();
 
 module.exports = (models) => {
-  dashboardRouter.get("/dashboard/getdata", async (req, res) => {
+  dashboardRouter.get("/dashboard/getdata", authenticate, async (req, res) => {
     try {
       // 1️⃣ Total Active Users
       const totalActiveUsers = await models.User.count({
@@ -33,6 +34,16 @@ module.exports = (models) => {
         const found = sessionData.find((d) => d.day === day);
         return found ? parseInt(found.count, 10) : 0;
       });
+
+      // Last-7-days figures for the summary tiles
+      // (a failure here must not take down the rest of the dashboard)
+      const weekAgo = literal("NOW() - INTERVAL '7 days'");
+      const newUsersWeek = await models.User.count({
+        where: { isDeleted: false, CreatedAt: { [Op.gte]: weekAgo } },
+      }).catch(() => null);
+      const pagesReadWeek = await models.UserEngagement.count({
+        where: { action: "READ_PAGE", CreatedAt: { [Op.gte]: weekAgo } },
+      }).catch(() => null);
 
       // 3️⃣ Top 10 Favourite Books
       const favouriteBooksData = await models.Favorite.findAll({
@@ -159,6 +170,8 @@ module.exports = (models) => {
 
       // ✅ Final Response
       return success(res, {
+        newUsersWeek,
+        pagesReadWeek,
         totalActiveUsers,
         sessionTrends: {
           series: [{ name: "Sessions", data: sessionTrends }],
