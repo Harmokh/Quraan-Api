@@ -1,6 +1,5 @@
 const nodemailer = require("nodemailer");
 const path = require("path");
-const { error, success } = require("./response");
 const dotenv = require("dotenv");
 
 dotenv.config({
@@ -18,42 +17,26 @@ const transporter = nodemailer.createTransport({
 });
 
 /**
- * Retry helper
- */
-async function retry(fn, attempts) {
-  for (let i = 0; i < attempts; i++) {
-    try {
-      return await fn();
-    } catch (err) {
-      console.error("Retry error:", err);
-    }
-  }
-}
-
-/**
- * Send template mail
+ * Send an HTML email. Resolves to true when the SMTP server accepted it and
+ * false otherwise (the reason is logged). Never throws, so a mail problem
+ * can't fail or crash the request that triggered it.
+ * (res/data are ignored; kept so existing callers don't need to change.)
  */
 const sendTemplateMail = async (to, subject, body, res, data) => {
-  const message = {
-    from: process.env.FROM_EMAIL,
-    to,
-    subject,
-    html: body,
-  };
-
-  await retry(
-    () =>
-      transporter.sendMail(message, (err) => {
-        if (err) {
-          return error(
-            res,
-            err.message || "An error occurred while sending the mail"
-          );
-        }
-        return success(res, data, "Mail sent successfully");
-      }),
-    3
-  );
+  const message = { from: process.env.FROM_EMAIL, to, subject, html: body };
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      await transporter.sendMail(message);
+      return true;
+    } catch (err) {
+      console.error(
+        `[mail] "${subject}" to ${to} failed (attempt ${attempt}/3): ${err.code || ""} ${err.response || err.message}`
+      );
+      // Wrong credentials won't fix themselves on a retry
+      if (err.code === "EAUTH") break;
+    }
+  }
+  return false;
 };
 
 module.exports = { sendTemplateMail };

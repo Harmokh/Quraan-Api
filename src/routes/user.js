@@ -149,6 +149,7 @@ module.exports = (models, router) => {
     }
 
     const t = await sequelize.transaction();
+    let mailFailed = false;
     try {
       let userRecord;
 
@@ -173,7 +174,7 @@ module.exports = (models, router) => {
             logoLink
           );
 
-          await sendTemplateMail(
+          const sent = await sendTemplateMail(
             existingUser.email,
             "Activate Your Account",
             html,
@@ -182,11 +183,9 @@ module.exports = (models, router) => {
           );
 
           await t.commit();
-          return success(
-            res,
-            null,
-            "User is not verified. Activation link has been resent."
-          );
+          return sent
+            ? success(res, null, "This email is registered but not activated yet. We've sent the activation link again.")
+            : warning(res, "This email is registered but not activated, and the activation email could not be sent. Please contact support.", MessageType.Warning);
         }
 
         // ❌ If verified user exists → block
@@ -234,13 +233,13 @@ module.exports = (models, router) => {
           logoLink
         );
 
-        await sendTemplateMail(
+        mailFailed = !(await sendTemplateMail(
           userRecord.email,
           "Activate Your Account",
           html,
           null,
           null
-        );
+        ));
       }
 
       await t.commit();
@@ -252,7 +251,11 @@ module.exports = (models, router) => {
       return success(
         res,
         savedUser,
-        id ? "User updated successfully" : "User created successfully"
+        id
+          ? "User updated successfully"
+          : mailFailed
+          ? "Account created, but the activation email could not be sent. Please contact support to activate your account."
+          : "Account created. Check your email for the activation link."
       );
     } catch (err) {
       await t.rollback();
@@ -459,13 +462,15 @@ module.exports = (models, router) => {
       );
 
       // Send email
-      await sendTemplateMail(
+      const sent = await sendTemplateMail(
         user.email,
         "Reset Your Password",
         html,
         null,
         null
       );
+      if (!sent)
+        return warning(res, "The reset email could not be sent. Please try again later or contact support.", MessageType.Warning);
 
       return success(res, {}, "Password reset link sent to your email");
     } catch (err) {
