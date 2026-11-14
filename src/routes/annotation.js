@@ -1,5 +1,17 @@
 const { success, warning, error, MessageType } = require("../utils/response");
 const authenticate = require("../middleware/authorize");
+const fs = require("fs");
+const path = require("path");
+
+// Voice notes are uploaded via /document/uploadsingle?destination=VoiceNotes
+const VOICE_DIR = path.resolve(__dirname, "../../public/VoiceNotes");
+const isVoicePath = (p) =>
+    typeof p === "string" && /^VoiceNotes\/[\w.-]+\.(wav|m4a|mp3|aac|ogg|webm|3gp)$/i.test(p);
+// Remove a voice note file that's no longer referenced (best effort)
+const removeVoiceFile = (p) => {
+    if (!isVoicePath(p)) return;
+    fs.unlink(path.join(VOICE_DIR, path.basename(p)), () => {});
+};
 
 module.exports = (models, router) => {
     const annotationRouter = router.Router();
@@ -17,7 +29,13 @@ module.exports = (models, router) => {
                 rect,
                 color,
                 content,
+                audioUrl,
             } = req.body;
+
+            // audioUrl: a VoiceNotes/ path, null/"" to remove, absent = unchanged
+            if (audioUrl !== undefined && audioUrl !== null && audioUrl !== "" && !isVoicePath(audioUrl))
+                return warning(res, "Invalid voice note", MessageType.Warning);
+            const newAudio = audioUrl === undefined ? undefined : (audioUrl || null);
 
             if (!versionId || !pageNumber || !rect)
                 return warning(
@@ -35,14 +53,14 @@ module.exports = (models, router) => {
             }
 
             if (annotation) {
-                // Update
-                await annotation.update({
-                    text,
-                    type,
-                    rect,
-                    color,
-                    content
-                });
+                // Update only the fields that were sent
+                const changes = Object.fromEntries(
+                    Object.entries({ text, type, rect, color, content, audioUrl: newAudio })
+                        .filter(([, v]) => v !== undefined)
+                );
+                const oldAudio = annotation.audioUrl;
+                await annotation.update(changes);
+                if (newAudio !== undefined && oldAudio && oldAudio !== newAudio) removeVoiceFile(oldAudio);
                 return success(res, annotation, "Annotation updated successfully");
             } else {
                 // Create
@@ -55,6 +73,7 @@ module.exports = (models, router) => {
                     rect,
                     color,
                     content,
+                    audioUrl: newAudio || null,
                 });
                 return success(res, annotation, "Annotation created successfully");
             }
@@ -158,8 +177,10 @@ module.exports = (models, router) => {
 
             if (!annotation) return warning(res, "Annotation not found", MessageType.Warning);
 
-            // Soft delete
-            await annotation.update({ isDeleted: true });
+            // Soft delete; the voice note file goes with it
+            const oldAudio = annotation.audioUrl;
+            await annotation.update({ isDeleted: true, audioUrl: null });
+            removeVoiceFile(oldAudio);
 
             return success(res, null, "Annotation deleted successfully");
         } catch (err) {

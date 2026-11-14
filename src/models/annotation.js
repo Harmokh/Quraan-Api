@@ -49,6 +49,13 @@ module.exports = (sequelize, Sequelize) => {
         type: Sequelize.TEXT,
         allowNull: true,
       },
+      // Voice note recorded on the highlight: path of the uploaded file
+      // ("VoiceNotes/<name>"), served from /p/
+      audioUrl: {
+        field: "AudioUrl",
+        type: Sequelize.STRING(300),
+        allowNull: true,
+      },
       isDeleted: {
         field: "IsDeleted",
         type: Sequelize.BOOLEAN,
